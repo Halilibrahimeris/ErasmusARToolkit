@@ -72,8 +72,10 @@ namespace Erasmus.ARToolkit.Tests
         {
             Assert.AreEqual(StatusMessages.RoomScan, StatusMessageResolver.Resolve(
                 new StatusContext(ToolkitMode.AR, false, true, 2, 1, true, false, true)));
-            Assert.AreEqual(StatusMessages.MovePhone, StatusMessageResolver.Resolve(
+            Assert.AreEqual(StatusMessages.TrackingLostWhileScanning, StatusMessageResolver.Resolve(
                 new StatusContext(ToolkitMode.AR, false, false, 2, 1, true, false, true)));
+            Assert.AreEqual(StatusMessages.MovePhone, StatusMessageResolver.Resolve(
+                new StatusContext(ToolkitMode.AR, false, false, 2, 1, true, false, false)));
         }
 
         [Test]

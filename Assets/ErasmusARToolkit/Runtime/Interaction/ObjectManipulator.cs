@@ -22,6 +22,12 @@ namespace Erasmus.ARToolkit
         /// <summary>False for content fixed to an image: it can be edited but not dragged away.</summary>
         public bool CanMove { get; private set; } = true;
 
+        /// <summary>
+        /// The object cannot be lowered below this height above its parent (objects on a scanned surface:
+        /// 0, the surface). Null: no limit.
+        /// </summary>
+        internal float? MinLocalHeight { get; set; }
+
         /// <summary>Rotation around the parent's up axis, 0-360 degrees.</summary>
         public float YawDegrees => Mathf.Repeat(transform.localEulerAngles.y, 360f);
 
@@ -51,6 +57,29 @@ namespace Erasmus.ARToolkit
         public void Raise(float meters)
         {
             transform.position += UpAxis * meters;
+            if (MinLocalHeight.HasValue && transform.localPosition.y < MinLocalHeight.Value)
+            {
+                var local = transform.localPosition;
+                local.y = MinLocalHeight.Value;
+                transform.localPosition = local;
+            }
+        }
+
+        /// <summary>
+        /// Gives the object another parent and a place under it. It keeps the direction it faces, and
+        /// <see cref="ResetPose"/> brings it back to this place, facing the way it was placed.
+        /// </summary>
+        internal void MoveUnder(Transform parent, Vector3 localPosition)
+        {
+            var placedRotation = transform.parent != null
+                ? transform.parent.rotation * initialLocalRotation
+                : initialLocalRotation;
+            transform.SetParent(parent, true);
+            transform.localPosition = localPosition;
+            initialLocalPosition = localPosition;
+            initialLocalRotation = parent != null
+                ? Quaternion.Inverse(parent.rotation) * placedRotation
+                : placedRotation;
         }
 
         public void SetScaleMultiplier(float multiplier)

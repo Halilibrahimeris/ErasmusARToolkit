@@ -17,6 +17,21 @@ namespace Erasmus.ARToolkit.Tests
         {
             StringAssert.Contains("Rotation 270°", TransformFormatter.Format(Vector3.zero, -90f, 1f));
         }
+
+        [Test]
+        public void Format_OnAScannedSurface_ShowsTheHeightAboveIt()
+        {
+            var text = TransformFormatter.Format(new Vector3(0.123f, 0.74f, -1.5f), 0.06f, 45.4f, 1.25f);
+            Assert.AreEqual(
+                "Position  X 0.12  Z -1.50 m    Height above surface 0.06 m\nRotation 45°    Scale 1.25x", text);
+        }
+
+        [Test]
+        public void Format_OnAScannedSurface_AHairBelowIt_IsZero()
+        {
+            StringAssert.Contains("Height above surface 0.00 m",
+                TransformFormatter.Format(Vector3.zero, -0.0004f, 0f, 1f));
+        }
     }
 
     public class ObjectManipulatorTests

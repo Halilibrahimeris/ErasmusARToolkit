@@ -18,7 +18,8 @@ namespace Erasmus.ARToolkit
     /// can see through (plane hulls reaching past a table edge, duplicate floors, small fragments)
     /// disappear. The scanned surfaces replace the raw ARCore planes for drawing and placement. After
     /// <see cref="FinishScan"/> the model stays as it is; scanning again adds to it,
-    /// <see cref="ResetScan"/> starts over. Lives on the XR Origin.
+    /// <see cref="ResetScan"/> starts over. The model hangs from AR anchors (<see cref="MapFrame"/>), so it
+    /// stays on the real room when ARCore corrects its map. Lives on the XR Origin.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class RoomScanner : MonoBehaviour
@@ -54,6 +55,28 @@ namespace Erasmus.ARToolkit
         const float WeakDepthSeconds = 5f;
         const float LookingDownDegrees = 30f;
 
+        /// <summary>When the anchor of the scan jumps this far, the camera frames of the next half second are not used...</summary>
+        const float JumpMeters = 0.02f;
+        const float JumpDegrees = 0.5f;
+        const float JumpPauseSeconds = 0.5f;
+
+        /// <summary>...and after a jump this large the model is checked against the room.</summary>
+        const float LargeJumpMeters = 0.10f;
+        const float LargeJumpDegrees = 3f;
+
+        /// <summary>Farther than this (meters) from where the scan started, one anchor no longer holds the model in place.</summary>
+        const float MaxMapDistance = 10f;
+
+        const float VerifySeconds = 3f;
+        const int VerifyFrames = 12;
+        const float VerifyPauseSeconds = 1f;
+
+        /// <summary>An object whose base is this close (meters) to a scanned surface stands on it.</summary>
+        const float AdoptHeight = 0.10f;
+
+        /// <summary>Where the floor is taken to be until a plane says more: this far (meters) below the phone.</summary>
+        const float FloorGuessBelowCamera = 1.2f;
+
         const string OccluderShaderName = "Erasmus AR Toolkit/Occluder";
         const string SurfaceDepthShaderName = "Erasmus AR Toolkit/Surface Depth";
 
@@ -70,7 +93,12 @@ namespace Erasmus.ARToolkit
         readonly List<Vector2> polygon = new List<Vector2>();
         readonly DepthResiduals residuals = new DepthResiduals();
         readonly StringBuilder report = new StringBuilder(256);
+        readonly MapFrame mapFrame = new MapFrame();
+        readonly SurfaceBindings bindings = new SurfaceBindings();
+        readonly ScanVerifier verifier = new ScanVerifier();
+        readonly ScanFrame verifyFrame = new ScanFrame();
 
+        ARAnchorManager anchorManager;
         ARPlaneManager planeManager;
         ARPlaneSurfaces planeSurfaces;
         ARCameraManager cameraManager;
@@ -86,6 +114,7 @@ namespace Erasmus.ARToolkit
         IScanFrameSource preciseSource;
         IScanFrameSource sparseSource;
         IScanFrameSource source;
+        IScanFrameSource verifySource;
         IScanSourceDiagnostics watchedSource;
         Func<bool> isTracking = () => ARSession.state == ARSessionState.SessionTracking;
         bool visible = true;
@@ -104,6 +133,12 @@ namespace Erasmus.ARToolkit
         float moveSpeed;
         float weakDepthSince = -1f;
         bool weakDepthSaid;
+        bool tooFarSaid;
+        bool verifying;
+        bool listeningToPlanes;
+        float verifyUntil;
+        float nextVerifyFrame;
+        float pausedUntil;
         ScanDiagnostics diagnostics;
         XRCameraBackgroundRenderingMode reportedBackground;
         float nextDiagnostics;
@@ -125,6 +160,15 @@ namespace Erasmus.ARToolkit
         public ScanDiagnostics Diagnostics => diagnostics;
 
         internal RoomSurfaceMap Map => map;
+
+        /// <summary>Where the space of the scan lies in the world.</summary>
+        internal MapFrame Frame => mapFrame;
+
+        /// <summary>The model is being checked against the room (see <see cref="Reverify"/>).</summary>
+        internal bool IsVerifying => verifying;
+
+        /// <summary>Objects that hang from the scan.</summary>
+        internal int HolderCount => bindings.Count;
 
         /// <summary>Called by the toolkit: the AR camera and the theme with the depth-only materials.</summary>
         internal void Initialize(Camera camera, ToolkitTheme toolkitTheme)
@@ -161,32 +205,72 @@ namespace Erasmus.ARToolkit
         {
             planeManager = GetComponent<ARPlaneManager>();
             planeSurfaces = GetComponent<ARPlaneSurfaces>();
+            anchorManager = GetComponent<ARAnchorManager>();
             ReadPlaneMaterials();
+            map.LevelMerged += bindings.OnLevelMerged;
+            map.LevelRemoved += bindings.OnLevelRemoved;
+            map.Floor.StateChanged += OnFloorStateChanged;
+        }
+
+        void OnEnable()
+        {
+            if (planeManager != null && !listeningToPlanes)
+            {
+                planeManager.trackablesChanged.AddListener(OnPlanesChanged);
+                listeningToPlanes = true;
+            }
         }
 
         void OnDisable()
         {
             // The AR rig was switched off: stop reading frames, keep what was scanned.
             StopScanning();
+            EndVerifying();
             UpdatePlaneSuppression();
+            if (planeManager != null && listeningToPlanes)
+            {
+                planeManager.trackablesChanged.RemoveListener(OnPlanesChanged);
+                listeningToPlanes = false;
+            }
         }
 
         void OnDestroy()
         {
             StopScanning();
+            EndVerifying();
             view?.Dispose();
+            mapFrame.Dispose();
             ObjectUtility.SafeDestroy(ownedOccluderMaterial);
             ObjectUtility.SafeDestroy(ownedSurfaceDepthMaterial);
         }
 
+        void OnApplicationPause(bool paused)
+        {
+            // The phone may have been carried somewhere else in the meantime.
+            if (!paused && HasModel)
+            {
+                Reverify();
+            }
+        }
+
         void Update()
         {
-            if (!IsScanning)
+            if (!IsScanning && !verifying)
             {
                 return;
             }
 
             TrackCameraSpeed();
+            if (verifying)
+            {
+                Verify();
+            }
+
+            if (!IsScanning)
+            {
+                return;
+            }
+
             SwitchToSparseIfNeeded();
             if (mappingChanged)
             {
@@ -215,6 +299,25 @@ namespace Erasmus.ARToolkit
             }
         }
 
+        void LateUpdate()
+        {
+            if (!mapFrame.IsBegun || !mapFrame.Refresh(out var moved, out var turned))
+            {
+                return;
+            }
+
+            view?.SetGridFrame(mapFrame.Root);
+            if (moved > LargeJumpMeters || turned > LargeJumpDegrees)
+            {
+                // ARCore found out that it was somewhere else (after tracking was lost, mostly).
+                Reverify();
+            }
+            else if (moved > JumpMeters || turned > JumpDegrees)
+            {
+                pausedUntil = Time.unscaledTime + JumpPauseSeconds;
+            }
+        }
+
         public void StartScan()
         {
             if (IsScanning)
@@ -230,6 +333,7 @@ namespace Erasmus.ARToolkit
                 return;
             }
 
+            EndVerifying();
             UseSource(source);
             IsScanning = true;
             if (arCamera != null)
@@ -239,11 +343,7 @@ namespace Erasmus.ARToolkit
                 lastRotation = keyRotation = cameraTransform.rotation;
             }
 
-            if (planeManager != null)
-            {
-                planeManager.trackablesChanged.AddListener(OnPlanesChanged);
-            }
-
+            EnsureFrame();
             UpdatePriors();
             Rebuild(true);
 
@@ -253,8 +353,10 @@ namespace Erasmus.ARToolkit
             nextPriors = now + PriorInterval * 0.5f;
             nextDiagnostics = now + DiagnosticsInterval;
             lastIntegrated = 0f;
+            pausedUntil = 0f;
             weakDepthSince = -1f;
             weakDepthSaid = false;
+            tooFarSaid = false;
             residuals.Clear();
             ScanningChanged?.Invoke(true);
             if (!source.IsPrecise)
@@ -275,9 +377,13 @@ namespace Erasmus.ARToolkit
             Notify(HasModel ? RoomScanText.Finished(Progress) : RoomScanText.NoSurfaces);
         }
 
-        /// <summary>Forgets everything scanned. A running scan keeps going from scratch.</summary>
+        /// <summary>
+        /// Forgets everything scanned. A running scan keeps going from scratch. Objects that stand on
+        /// scanned surfaces stay where they are.
+        /// </summary>
         public void ResetScan()
         {
+            EndVerifying();
             ClearModel();
             if (IsScanning)
             {
@@ -304,9 +410,29 @@ namespace Erasmus.ARToolkit
         /// <summary>The scanned surface under a screen point (pixels). Only meaningful when <see cref="HasModel"/>.</summary>
         public bool TryGetPose(Vector2 screenPosition, out Pose pose)
         {
-            pose = default;
-            return HasModel && arCamera != null
-                   && map.Raycast(arCamera.ScreenPointToRay(screenPosition), RaycastDistance, out pose);
+            var found = TryGetHit(screenPosition, out var hit);
+            pose = hit.Pose;
+            return found;
+        }
+
+        /// <summary>Like <see cref="TryGetPose"/>, and tells which surface was hit.</summary>
+        public bool TryGetHit(Vector2 screenPosition, out SurfaceHit hit)
+        {
+            hit = default;
+            return HasModel && arCamera != null && TryGetHit(arCamera.ScreenPointToRay(screenPosition), out hit);
+        }
+
+        /// <param name="worldRay">A ray in world space.</param>
+        internal bool TryGetHit(Ray worldRay, out SurfaceHit hit)
+        {
+            hit = default;
+            if (!map.Raycast(mapFrame.ToMap(worldRay), RaycastDistance, out var pose, out var levelId))
+            {
+                return false;
+            }
+
+            hit = new SurfaceHit(mapFrame.ToWorld(pose), levelId);
+            return true;
         }
 
         /// <summary>
@@ -315,8 +441,8 @@ namespace Erasmus.ARToolkit
         /// </summary>
         public bool SetFloorAt(Vector2 screenPosition)
         {
-            if (arCamera == null || !map.Raycast(arCamera.ScreenPointToRay(screenPosition), RaycastDistance,
-                    out _, out var levelId) || !map.SetFloor(levelId))
+            if (arCamera == null || !map.Raycast(mapFrame.ToMap(arCamera.ScreenPointToRay(screenPosition)),
+                    RaycastDistance, out _, out var levelId) || !map.SetFloor(levelId))
             {
                 Notify(RoomScanText.NoScannedSurface);
                 return false;
@@ -325,6 +451,216 @@ namespace Erasmus.ARToolkit
             Rebuild(true);
             Notify(RoomScanText.FloorSet);
             return true;
+        }
+
+        /// <summary>
+        /// Checks the scanned model against what the camera sees now, for a few seconds. A model that is a
+        /// few centimeters too high or too low is moved; when it lies somewhere else, the user is asked to
+        /// scan again. Runs by itself after tracking was lost and after the app was paused.
+        /// </summary>
+        public void Reverify()
+        {
+            if (verifying || !HasModel || !isActiveAndEnabled)
+            {
+                return;
+            }
+
+            if (source == null)
+            {
+                CreateSources();
+                verifySource = PickSource();
+                if (verifySource == null)
+                {
+                    return;
+                }
+
+                verifySource.Begin();
+            }
+
+            var now = Time.unscaledTime;
+            verifying = true;
+            verifyUntil = now + VerifyPauseSeconds + VerifySeconds;
+            nextVerifyFrame = now + VerifyPauseSeconds;
+            verifier.Begin(map);
+        }
+
+        /// <summary>
+        /// What an object placed on a scanned surface hangs from (see <see cref="SurfaceHolder"/>).
+        /// </summary>
+        /// <param name="worldPose">Where the object stands, in world space.</param>
+        /// <param name="levelId">The surface it stands on, or -1 to look for the surface under the pose.</param>
+        internal SurfaceHolder CreateContentHolder(Pose worldPose, int levelId = -1)
+        {
+            EnsureFrame();
+            var root = mapFrame.Root;
+            var position = mapFrame.ToMap(worldPose.position);
+            var level = levelId >= 0 ? map.FindLevel(levelId) : FindLevelUnder(position);
+            if (level != null)
+            {
+                position.y = level.DrawnHeight;
+            }
+
+            return bindings.Create(root, new Pose(position, Quaternion.identity), level != null ? level.Id : -1);
+        }
+
+        /// <summary>Moves the holder of an object to another point of the scan.</summary>
+        internal void MoveBound(ToolkitObject target, SurfaceHit hit)
+        {
+            if (target != null && target.SurfaceHolder != null)
+            {
+                bindings.Move(target.SurfaceHolder, mapFrame.ToMap(hit.Pose.position), hit.LevelId);
+            }
+        }
+
+        /// <summary>
+        /// An object that was placed before the scan and stands on a scanned surface hangs from the scan
+        /// from now on. True when it does.
+        /// </summary>
+        internal bool Adopt(ToolkitObject target)
+        {
+            if (target == null || !HasModel || !target.IsPlaced)
+            {
+                return false;
+            }
+
+            if (target.HasSurface)
+            {
+                return true;
+            }
+
+            var position = mapFrame.ToMap(target.transform.position);
+            var level = FindLevelUnder(position);
+            if (level == null)
+            {
+                return false;
+            }
+
+            position.y = level.DrawnHeight;
+            if (target.SurfaceHolder != null)
+            {
+                bindings.Move(target.SurfaceHolder, position, level.Id);
+                target.StandOnHolder();
+                return true;
+            }
+
+            target.HangFrom(bindings.Create(mapFrame.Root, new Pose(position, Quaternion.identity), level.Id));
+            return true;
+        }
+
+        /// <summary>The scanned surface right under a point (map space), or null.</summary>
+        SurfaceLevel FindLevelUnder(Vector3 mapPosition)
+        {
+            var ray = new Ray(mapPosition + Vector3.up * AdoptHeight, Vector3.down);
+            return map.Raycast(ray, 2f * AdoptHeight, out _, out var levelId) ? map.FindLevel(levelId) : null;
+        }
+
+        /// <summary>Anchors the space of the scan where the first scan starts.</summary>
+        void EnsureFrame()
+        {
+            if (mapFrame.IsBegun)
+            {
+                return;
+            }
+
+            var seed = Vector3.zero;
+            if (arCamera != null)
+            {
+                var floor = FindPlaneFloorHeight();
+                seed = arCamera.transform.position;
+                seed.y = float.IsNaN(floor) ? seed.y - FloorGuessBelowCamera : floor;
+            }
+
+            mapFrame.Begin(GetComponent<XROrigin>(), anchorManager, seed);
+            mapFrame.Refresh(out _, out _);
+        }
+
+        void Verify()
+        {
+            var now = Time.unscaledTime;
+            var reader = source ?? verifySource;
+            if (reader != null && now >= nextVerifyFrame && isTracking() && mapFrame.IsTracking
+                && turnSpeed <= MaxTurnDegreesPerSecond && reader.TryReadFrame(verifyFrame))
+            {
+                nextVerifyFrame = now + IntegrateInterval;
+                verifyFrame.Transform(mapFrame.WorldToMap);
+                verifier.Add(verifyFrame);
+            }
+
+            if (verifier.Frames < VerifyFrames && now < verifyUntil)
+            {
+                return;
+            }
+
+            var verdict = verifier.Finish(out var shift);
+            EndVerifying();
+            switch (verdict)
+            {
+                case ScanVerdict.Shifted:
+                    mapFrame.AddHeightOffset(shift);
+                    Log($"Scan check: the model was {shift * 100f:0.0} cm off in height and was moved.");
+                    break;
+                case ScanVerdict.Moved:
+                    Log("Scan check: the model does not match the room.");
+                    Notify(RoomScanText.ScanMoved);
+                    break;
+                default:
+                    Log("Scan check: " + verdict);
+                    break;
+            }
+        }
+
+        void EndVerifying()
+        {
+            verifying = false;
+            if (verifySource != null)
+            {
+                verifySource.End();
+                verifySource = null;
+            }
+
+            pausedUntil = Mathf.Max(pausedUntil, Time.unscaledTime + JumpPauseSeconds);
+        }
+
+        /// <summary>A trusted floor gives the scan its height: the anchor goes onto ARCore's floor plane.</summary>
+        void OnFloorStateChanged(FloorState state)
+        {
+            if (state == FloorState.Trusted)
+            {
+                AttachFloorAnchor();
+            }
+        }
+
+        void AttachFloorAnchor()
+        {
+            if (planeManager == null || !mapFrame.IsBegun || map.Floor.Level == null)
+            {
+                return;
+            }
+
+            var floorHeight = map.Floor.Height;
+            ARPlane largest = null;
+            var largestArea = 0f;
+            foreach (var plane in planeManager.trackables)
+            {
+                if (plane.subsumedBy != null || plane.alignment != PlaneAlignment.HorizontalUp
+                    || plane.trackingState != TrackingState.Tracking)
+                {
+                    continue;
+                }
+
+                var height = mapFrame.ToMap(plane.transform.position).y;
+                var area = plane.size.x * plane.size.y;
+                if (Mathf.Abs(height - floorHeight) <= RoomSurfaceMap.FloorPlaneDistance && area > largestArea)
+                {
+                    largest = plane;
+                    largestArea = area;
+                }
+            }
+
+            if (largest != null)
+            {
+                mapFrame.TryAttachFloor(largest);
+            }
         }
 
         void StopScanning()
@@ -336,11 +672,6 @@ namespace Erasmus.ARToolkit
 
             UseSource(null);
             IsScanning = false;
-            if (planeManager != null)
-            {
-                planeManager.trackablesChanged.RemoveListener(OnPlanesChanged);
-            }
-
             ScanningChanged?.Invoke(false);
         }
 
@@ -373,6 +704,15 @@ namespace Erasmus.ARToolkit
         void OnPlanesChanged(ARTrackablesChangedEventArgs<ARPlane> changes)
         {
             priorsDirty = true;
+            foreach (var removed in changes.removed)
+            {
+                mapFrame.OnPlaneRemoved(removed.Key, removed.Value != null ? removed.Value.subsumedBy : null);
+            }
+
+            if (map.FloorState == FloorState.Trusted && !mapFrame.HasFloorAnchor && changes.updated.Count > 0)
+            {
+                AttachFloorAnchor();
+            }
         }
 
         void OnMappingChanged()
@@ -396,6 +736,7 @@ namespace Erasmus.ARToolkit
         void ClearModel()
         {
             map.Clear();
+            bindings.UnbindAll();
             model.Reset();
             view?.Clear();
             HasModel = false;
@@ -403,8 +744,10 @@ namespace Erasmus.ARToolkit
 
         void Integrate()
         {
-            nextIntegrate = Time.unscaledTime + IntegrateInterval;
-            if (source == null || !isTracking() || turnSpeed > MaxTurnDegreesPerSecond || moveSpeed > MaxMetersPerSecond)
+            var now = Time.unscaledTime;
+            nextIntegrate = now + IntegrateInterval;
+            if (source == null || verifying || now < pausedUntil || !isTracking() || !mapFrame.IsTracking
+                || turnSpeed > MaxTurnDegreesPerSecond || moveSpeed > MaxMetersPerSecond)
             {
                 return;
             }
@@ -420,11 +763,38 @@ namespace Erasmus.ARToolkit
                 return;
             }
 
+            AddResiduals();
+            frame.Transform(mapFrame.WorldToMap);
+            if (IsTooFar(frame.Origin))
+            {
+                return;
+            }
+
             var started = Stopwatch.GetTimestamp();
             map.Integrate(frame);
             integrateMs = Smooth(integrateMs, started);
-            AddResiduals();
             UpdatePlaneSuppression();
+        }
+
+        /// <summary>
+        /// One anchor holds the model in place around the spot where the scan started. Far from it, small
+        /// turns of the anchor move the model by centimeters, so nothing is added there.
+        /// </summary>
+        bool IsTooFar(Vector3 mapPosition)
+        {
+            mapPosition.y = 0f;
+            if (mapPosition.sqrMagnitude <= MaxMapDistance * MaxMapDistance)
+            {
+                return false;
+            }
+
+            if (!tooFarSaid)
+            {
+                tooFarSaid = true;
+                Notify(RoomScanText.TooFar);
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -469,7 +839,7 @@ namespace Erasmus.ARToolkit
             nextPriors = Time.unscaledTime + PriorInterval;
             if (planeManager != null)
             {
-                ArcorePlanePriors.Apply(planeManager, map, polygon);
+                ArcorePlanePriors.Apply(planeManager, map, polygon, mapFrame.WorldToMap);
             }
         }
 
@@ -483,6 +853,7 @@ namespace Erasmus.ARToolkit
             nextRebuild = now + RebuildInterval;
 
             model.Rebuild(map, seconds, all, GetView());
+            bindings.FollowHeights(map);
             HasModel = model.SurfaceArea > 0f;
             UpdatePlaneSuppression();
             rebuildMs = Smooth(rebuildMs, started);
@@ -605,10 +976,12 @@ namespace Erasmus.ARToolkit
         {
             if (view == null)
             {
-                view = new RoomSurfaceView(fillMaterial, outlineMaterial,
+                EnsureFrame();
+                view = new RoomSurfaceView(mapFrame.Root, fillMaterial, outlineMaterial,
                     useOccluders ? GetOccluderMaterial() : null,
                     steadySurfaceDepth ? GetSurfaceDepthMaterial() : null);
                 view.SetVisible(visible);
+                view.SetGridFrame(mapFrame.Root);
             }
 
             return view;
@@ -691,15 +1064,16 @@ namespace Erasmus.ARToolkit
         }
 
         /// <summary>
-        /// Collects how far the floor points of the last frame lie from the floor: from the floor plane
-        /// ARCore detected when there is one (it shows the bias of depth), else from the scanned floor.
+        /// Collects how far the floor points of the frame (still in world space) lie from the floor: from
+        /// the floor plane ARCore detected when there is one (it shows the bias of depth), else from the
+        /// scanned floor.
         /// </summary>
         void AddResiduals()
         {
             var reference = FindPlaneFloorHeight();
             if (float.IsNaN(reference) && model.DrawnFloor.HasValue)
             {
-                reference = model.DrawnFloor.Value;
+                reference = mapFrame.ToWorldHeight(model.DrawnFloor.Value);
             }
 
             if (!float.IsNaN(reference))
@@ -757,7 +1131,9 @@ namespace Erasmus.ARToolkit
             diagnostics.IntegrateMs = integrateMs;
             diagnostics.RebuildMs = rebuildMs;
             diagnostics.CameraHeight = arCamera != null ? arCamera.transform.position.y : float.NaN;
-            diagnostics.FloorHeight = model.DrawnFloor ?? float.NaN;
+            diagnostics.FloorHeight = model.DrawnFloor.HasValue
+                ? mapFrame.ToWorldHeight(model.DrawnFloor.Value)
+                : float.NaN;
             diagnostics.PlaneFloorHeight = FindPlaneFloorHeight();
             diagnostics.Floor = floor.State;
             diagnostics.FloorFromPlane = floor.FromPlane;
@@ -794,12 +1170,12 @@ namespace Erasmus.ARToolkit
             foreach (var level in map.Levels)
             {
                 report.Append(report.Length > 0 ? " | " : string.Empty);
-                report.Append(level.Height.ToString("0.000", culture)).Append("m ");
+                report.Append(mapFrame.ToWorldHeight(level.Height).ToString("0.000", culture)).Append("m ");
                 report.Append(level.ShownArea.ToString("0.00", culture)).Append("m2");
                 var plane = level.PlaneHeight;
                 if (plane.HasValue)
                 {
-                    report.Append(" plane ").Append(plane.Value.ToString("0.000", culture));
+                    report.Append(" plane ").Append(mapFrame.ToWorldHeight(plane.Value).ToString("0.000", culture));
                 }
 
                 report.Append(level.IsFloor ? " floor" : string.Empty);

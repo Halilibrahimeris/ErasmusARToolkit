@@ -4,7 +4,9 @@
 // Overlapping planes of one real surface look like a single surface because:
 // - The texture is mapped in world space (x/z in meters times the tiling), so every plane shares
 //   one grid whatever its rotation. This suits horizontal planes only (the toolkit detects only
-//   those); a vertical plane would show stretched streaks.
+//   those); a vertical plane would show stretched streaks. Scanned surfaces map it in the space of
+//   the scan instead (_GridFrame: where that space lies in the world), so their grid stays on them
+//   when ARCore corrects its map.
 // - ARPlaneSurfaces gives every surface its own stencil bit. The fill uses NotEqual + Replace, so a
 //   pixel is painted once per surface; the outline uses NotEqual + Keep and draws after all fills,
 //   so only the outer edge of the whole surface shows. With _StencilComp = Always (the default)
@@ -28,6 +30,7 @@ Shader "Erasmus AR Toolkit/AR Surface"
         _DepthBias("Depth Bias (min fraction of distance)", Range(0, 0.2)) = 0.05
         _HeightTolerance("Height Tolerance (m above the surface)", Range(0, 0.5)) = 0.12
         _MaxDepthBias("Max Depth Bias (fraction of distance)", Range(0, 0.5)) = 0.3
+        _GridFrame("Grid Frame (origin x, origin z, cos, sin)", Vector) = (0, 0, 1, 0)
         [IntRange] _StencilBit("Stencil Bit", Range(0, 255)) = 0
         [Enum(UnityEngine.Rendering.CompareFunction)] _StencilComp("Stencil Compare", Float) = 8
         [Enum(UnityEngine.Rendering.StencilOp)] _StencilPass("Stencil Pass", Float) = 0
@@ -76,6 +79,7 @@ Shader "Erasmus AR Toolkit/AR Surface"
                 float _DepthBias;
                 float _HeightTolerance;
                 float _MaxDepthBias;
+                float4 _GridFrame;
             CBUFFER_END
 
             struct Attributes
@@ -101,7 +105,10 @@ Shader "Erasmus AR Toolkit/AR Surface"
                 float3 depthTestedWS = cameraWS + (positionWS - cameraWS) * (1.0 - bias);
                 output.positionCS = TransformWorldToHClip(depthTestedWS);
 
-                output.uv = positionWS.xz * _BaseMap_ST.xy + _BaseMap_ST.zw;
+                float2 fromOrigin = positionWS.xz - _GridFrame.xy;
+                float2 onGrid = float2(_GridFrame.z * fromOrigin.x - _GridFrame.w * fromOrigin.y,
+                    _GridFrame.w * fromOrigin.x + _GridFrame.z * fromOrigin.y);
+                output.uv = onGrid * _BaseMap_ST.xy + _BaseMap_ST.zw;
                 return output;
             }
 

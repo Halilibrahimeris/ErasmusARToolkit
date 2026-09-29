@@ -12,23 +12,31 @@ namespace Erasmus.ARToolkit
     /// <item>a depth correction that replaces noisy real-world depth on the surface with the surface's own
     /// depth (<see cref="SurfaceDepthMaterials"/>), so grids and objects standing on it are not cut.</item>
     /// </list>
-    /// Meshes are in world space under one root object at the world origin.
+    /// Meshes are in the space of the scan, under the root of its <see cref="MapFrame"/>. The grid is
+    /// drawn in that space too (<see cref="SetGridFrame"/>), so it moves with the surfaces.
     /// </summary>
     internal sealed class RoomSurfaceView : IRoomModelSink
     {
+        static readonly int GridFrameId = Shader.PropertyToID("_GridFrame");
+
+        readonly Transform root;
         readonly Material fillMaterial;
         readonly Material outlineMaterial;
         readonly Material occluderMaterial;
         readonly SurfaceDepthMaterials depthMaterials;
         readonly Dictionary<int, LevelView> views = new Dictionary<int, LevelView>();
         readonly List<int> staleIds = new List<int>();
-        GameObject root;
+        Vector4 gridFrame = new Vector4(0f, 0f, 1f, 0f);
         bool visible = true;
 
-        public RoomSurfaceView(Material fill, Material outline, Material occluder, Material surfaceDepth)
+        /// <param name="surfaceRoot">Parent of the drawn surfaces. It belongs to the scan, not to the view.</param>
+        /// <param name="fill">Grid material of the planes. The view draws with a copy of its own.</param>
+        public RoomSurfaceView(Transform surfaceRoot, Material fill, Material outline, Material occluder,
+            Material surfaceDepth)
         {
-            fillMaterial = fill;
-            outlineMaterial = outline;
+            root = surfaceRoot;
+            fillMaterial = Copy(fill);
+            outlineMaterial = Copy(outline);
             occluderMaterial = occluder;
             depthMaterials = new SurfaceDepthMaterials(surfaceDepth);
         }
@@ -42,11 +50,35 @@ namespace Erasmus.ARToolkit
         /// <summary>Surfaces that have a depth correction right now.</summary>
         public int DepthSlotsUsed => depthMaterials.UsedCount;
 
+        /// <summary>
+        /// Tells the grid where the space of the scan lies, so the grid lines keep their place on the
+        /// surfaces when the scan moves or turns.
+        /// </summary>
+        public void SetGridFrame(Transform frame)
+        {
+            var position = frame.position;
+            var yaw = frame.eulerAngles.y * Mathf.Deg2Rad;
+            var value = new Vector4(position.x, position.z, Mathf.Cos(yaw), Mathf.Sin(yaw));
+            if (value == gridFrame)
+            {
+                return;
+            }
+
+            gridFrame = value;
+            ApplyGridFrame(fillMaterial);
+            ApplyGridFrame(outlineMaterial);
+        }
+
         public void Show(int levelId, SurfaceMeshData data)
         {
+            if (root == null)
+            {
+                return;
+            }
+
             if (!views.TryGetValue(levelId, out var view))
             {
-                view = new LevelView(Root.transform, levelId, this);
+                view = new LevelView(root, levelId, this);
                 views.Add(levelId, view);
             }
 
@@ -97,20 +129,20 @@ namespace Erasmus.ARToolkit
         {
             Clear();
             depthMaterials.Dispose();
-            ObjectUtility.SafeDestroy(root);
-            root = null;
+            ObjectUtility.SafeDestroy(fillMaterial);
+            ObjectUtility.SafeDestroy(outlineMaterial);
         }
 
-        GameObject Root
+        static Material Copy(Material source)
         {
-            get
-            {
-                if (root == null)
-                {
-                    root = new GameObject("Room Surfaces (scanned)");
-                }
+            return source != null ? new Material(source) { name = source.name + " (scan)" } : null;
+        }
 
-                return root;
+        void ApplyGridFrame(Material material)
+        {
+            if (material != null && material.HasProperty(GridFrameId))
+            {
+                material.SetVector(GridFrameId, gridFrame);
             }
         }
 

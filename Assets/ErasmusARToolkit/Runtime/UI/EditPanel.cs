@@ -81,7 +81,9 @@ namespace Erasmus.ARToolkit
             var manipulator = target.Manipulator;
             var yaw = manipulator != null ? manipulator.YawDegrees : target.transform.eulerAngles.y;
             var scaleValue = manipulator != null ? manipulator.ScaleMultiplier : 1f;
-            values.text = TransformFormatter.Format(target.transform.position, yaw, scaleValue);
+            values.text = target.HasSurface
+                ? TransformFormatter.Format(target.transform.position, target.HeightAboveSurface, yaw, scaleValue)
+                : TransformFormatter.Format(target.transform.position, yaw, scaleValue);
             scale.SetValueWithoutNotify(scaleValue);
             scale.SetEnabled(manipulator != null);
             labelButton.text = target.IsLabelVisible ? "Hide Card" : "Show Card";

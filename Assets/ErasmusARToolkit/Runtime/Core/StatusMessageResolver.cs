@@ -34,6 +34,8 @@ namespace Erasmus.ARToolkit
     {
         public const string Checking = "Checking AR support...";
         public const string MovePhone = "Move your phone slowly to start tracking.";
+        public const string TrackingLostWhileScanning =
+            "The phone lost track of the room. Point it at something with detail and move slowly; the scan waits.";
         public const string ScanSurfaces = "Point the camera at the floor or a table and move slowly, or tap Scan Room.";
         public const string RoomScan = "Room scan: first point the phone at the floor near your feet, then walk slowly " +
                                        "and look at every table top. Tap Finish Scan when done.";
@@ -67,7 +69,7 @@ namespace Erasmus.ARToolkit
         {
             if (!context.IsTracking)
             {
-                return StatusMessages.MovePhone;
+                return context.IsScanning ? StatusMessages.TrackingLostWhileScanning : StatusMessages.MovePhone;
             }
 
             if (context.IsScanning)

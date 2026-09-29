@@ -155,10 +155,43 @@ namespace Erasmus.ARToolkit
                 dragging = true;
             }
 
-            if (dragging && manager.ActiveSurface.TryGetPose(position, out var pose))
+            if (dragging && TryGetSurface(position, out var pose, out var levelId))
             {
-                pressedObject.Manipulator.MoveTo(pose.position);
+                Move(pressedObject, pose, levelId);
             }
+        }
+
+        /// <summary>
+        /// The surface under a screen position. After a room scan it is a scanned surface, and
+        /// <paramref name="levelId"/> says which one; else it is -1.
+        /// </summary>
+        bool TryGetSurface(Vector2 position, out Pose pose, out int levelId)
+        {
+            levelId = -1;
+            var scanner = manager.Mode == ToolkitMode.AR ? manager.RoomScanner : null;
+            if (scanner != null && scanner.HasModel)
+            {
+                var found = scanner.TryGetHit(position, out var hit) && !hit.Blocked;
+                pose = hit.Pose;
+                levelId = found ? hit.LevelId : -1;
+                return found;
+            }
+
+            return manager.ActiveSurface.TryGetPose(position, out pose);
+        }
+
+        /// <summary>An object on a scanned surface moves with what it hangs from, onto the surface under the pointer.</summary>
+        void Move(ToolkitObject target, Pose pose, int levelId)
+        {
+            var scanner = manager.RoomScanner;
+            if (levelId >= 0 && scanner != null && target.SurfaceHolder != null)
+            {
+                scanner.MoveBound(target, new SurfaceHit(pose, levelId));
+                target.StandOnHolder();
+                return;
+            }
+
+            target.Manipulator.MoveTo(pose.position);
         }
 
         void EndGesture(Vector2 position)
@@ -267,14 +300,14 @@ namespace Erasmus.ARToolkit
                 return;
             }
 
-            if (!manager.ActiveSurface.TryGetPose(position, out var pose))
+            if (!TryGetSurface(position, out var pose, out var levelId))
             {
                 Notify(NoSurfaceMessage());
                 return;
             }
 
             var facing = ManipulationMath.YawTowards(pose.position, manager.ActiveCamera.transform.position);
-            var parent = manager.CreatePlacementParent(pose, out var anchorHolder);
+            var parent = manager.CreatePlacementParent(pose, levelId, out var anchorHolder);
             var placed = ToolkitObjectFactory.SpawnPlaceable(item, new Pose(pose.position, facing),
                 parent, manager.Config.ScaleLimits, manager.Theme);
             if (anchorHolder != null)

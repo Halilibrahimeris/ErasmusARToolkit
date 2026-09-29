@@ -17,7 +17,7 @@ namespace Erasmus.ARToolkit.Tests
     public class RoomScannerSourcesPlayModeTests
     {
         const float TimeoutSeconds = 5f;
-        const string ViewRootName = "Room Surfaces (scanned)";
+        const string ViewRootName = MapFrame.RootName;
 
         readonly List<string> notifications = new List<string>();
         GameObject rig;
@@ -127,8 +127,8 @@ namespace Erasmus.ARToolkit.Tests
         {
             depth.Delivers = false;
             depth.Mapping = MappingState.Checking;
-            UseTheFloorArcoreFound();
             scanner.StartScan();
+            UseTheFloorArcoreFound();
             yield return WaitUntil(() => depth.Reads >= 3);
             Assert.IsFalse(scanner.HasModel);
 
@@ -149,8 +149,8 @@ namespace Erasmus.ARToolkit.Tests
         public IEnumerator PhoneWithoutDepth_SaysThatTheScanIsLessExact()
         {
             depth.IsAvailable = false;
-            UseTheFloorArcoreFound();
             scanner.StartScan();
+            UseTheFloorArcoreFound();
             Assert.IsTrue(planes.IsSuppressed, "Without depth the scan draws the planes itself, from the start.");
             yield return WaitUntil(() => scanner.HasModel);
 
@@ -182,8 +182,11 @@ namespace Erasmus.ARToolkit.Tests
         [UnityTest]
         public IEnumerator UserStandsStill_EvidenceGrowsAtHalfRate()
         {
-            var cell = RoomSurfaceMap.CellOf(0f, 0.8f);
             scanner.StartScan();
+
+            // The scan has a space of its own, which begins where the scan was started.
+            var inMap = scanner.Frame.ToMap(new Vector3(0f, 0f, 0.8f));
+            var cell = RoomSurfaceMap.CellOf(inMap.x, inMap.z);
             var startedAt = Time.unscaledTime;
             yield return WaitUntil(() => scanner.Map.FramesIntegrated >= 6);
             var firstFramesTook = Time.unscaledTime - startedAt;
@@ -235,7 +238,8 @@ namespace Erasmus.ARToolkit.Tests
         /// </summary>
         void UseTheFloorArcoreFound()
         {
-            scanner.Map.EnsureLevel(0f);
+            // The floor of the room lies at height 0 of the world; the scan has a space of its own.
+            scanner.Map.EnsureLevel(scanner.Frame.ToMap(Vector3.zero).y);
         }
 
         static IEnumerator WaitUntil(Func<bool> condition)

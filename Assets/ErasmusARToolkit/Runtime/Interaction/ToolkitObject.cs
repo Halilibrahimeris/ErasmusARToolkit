@@ -12,6 +12,7 @@ namespace Erasmus.ARToolkit
         InfoLabel label;
         SelectionIndicator indicator;
         GameObject anchorHolder;
+        SurfaceHolder surfaceHolder;
 
         public string DisplayName { get; private set; } = string.Empty;
         public InfoLabelData Info { get; private set; } = new InfoLabelData();
@@ -21,6 +22,15 @@ namespace Erasmus.ARToolkit
 
         /// <summary>True for objects the user placed (they can be deleted); false for image target content.</summary>
         public bool IsPlaced { get; private set; }
+
+        /// <summary>The object stands on a scanned surface and follows it (see <see cref="SurfaceHolder"/>).</summary>
+        public bool HasSurface => surfaceHolder != null && surfaceHolder.HasSurface;
+
+        /// <summary>How far (meters) the object was raised above the surface it stands on.</summary>
+        public float HeightAboveSurface => surfaceHolder != null ? transform.localPosition.y : 0f;
+
+        /// <summary>What the object hangs from when it stands on a scanned surface, else null.</summary>
+        internal SurfaceHolder SurfaceHolder => surfaceHolder;
 
         public bool HasLabel => label != null;
         public bool IsLabelVisible => label != null && label.IsVisible;
@@ -40,6 +50,66 @@ namespace Erasmus.ARToolkit
         internal void SetAnchorHolder(GameObject holder)
         {
             anchorHolder = holder;
+            surfaceHolder = holder != null ? holder.GetComponent<SurfaceHolder>() : null;
+            ApplySurfaceLimit();
+        }
+
+        /// <summary>
+        /// Moves the object from what it hangs from now onto a holder of the room scan: it stands on the
+        /// scanned surface from now on. Its anchor is no longer needed.
+        /// </summary>
+        internal void HangFrom(SurfaceHolder holder)
+        {
+            if (holder == null)
+            {
+                return;
+            }
+
+            var before = anchorHolder;
+            if (manipulator != null)
+            {
+                manipulator.MoveUnder(holder.transform, Vector3.zero);
+            }
+            else
+            {
+                transform.SetParent(holder.transform, true);
+                transform.localPosition = Vector3.zero;
+            }
+
+            anchorHolder = holder.gameObject;
+            surfaceHolder = holder;
+            ApplySurfaceLimit();
+            if (before != null && before != anchorHolder)
+            {
+                ObjectUtility.SafeDestroy(before);
+            }
+        }
+
+        /// <summary>Puts the object onto its holder, which was moved to the surface under the object.</summary>
+        internal void StandOnHolder()
+        {
+            if (surfaceHolder == null)
+            {
+                return;
+            }
+
+            if (manipulator != null)
+            {
+                manipulator.MoveUnder(surfaceHolder.transform, Vector3.zero);
+            }
+            else
+            {
+                transform.localPosition = Vector3.zero;
+            }
+        }
+
+        /// <summary>An object on a scanned surface cannot be lowered into it.</summary>
+        void ApplySurfaceLimit()
+        {
+            if (manipulator != null)
+            {
+                manipulator.MinLocalHeight = surfaceHolder != null ? 0f : (float?)null;
+            }
         }
 
         public void SetSelected(bool selected)

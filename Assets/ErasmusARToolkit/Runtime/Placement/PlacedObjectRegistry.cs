@@ -28,6 +28,16 @@ namespace Erasmus.ARToolkit
 
         public bool CanPlace => Count < MaxObjects;
 
+        /// <summary>The placed objects that still exist.</summary>
+        public IReadOnlyList<ToolkitObject> Objects
+        {
+            get
+            {
+                PruneDestroyed();
+                return objects;
+            }
+        }
+
         public void Add(ToolkitObject item)
         {
             if (item == null || objects.Contains(item))

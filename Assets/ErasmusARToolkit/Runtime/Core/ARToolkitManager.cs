@@ -19,6 +19,9 @@ namespace Erasmus.ARToolkit
         /// <summary>The screen stays on this long (seconds) after the last touch in AR mode.</summary>
         const float KeepAwakeSeconds = 180f;
 
+        /// <summary>After tracking was lost for this long (seconds), the scanned room is checked again.</summary>
+        const float TrackingLossToVerify = 2f;
+
         [Header("Setup")]
         [SerializeField] ARToolkitConfig config;
         [SerializeField] ToolkitTheme theme;
@@ -48,6 +51,8 @@ namespace Erasmus.ARToolkit
         float lastUserActivity;
         bool keepingAwake;
         bool themeChecked;
+        bool adoptObjects;
+        float trackingLostAt = -1f;
 
         public event Action<ToolkitMode> ModeChanged;
         public event Action<string> StatusChanged;
@@ -249,6 +254,39 @@ namespace Erasmus.ARToolkit
 
             roomScanner.Initialize(arCamera, theme);
             roomScanner.SetVisible(PlanesVisible);
+            roomScanner.ScanningChanged += OnScanningChanged;
+        }
+
+        void OnDestroy()
+        {
+            if (roomScanner != null)
+            {
+                roomScanner.ScanningChanged -= OnScanningChanged;
+            }
+        }
+
+        void OnScanningChanged(bool isScanning)
+        {
+            // Once the scan has drawn its last surfaces, the objects on them hang from the scan.
+            adoptObjects = !isScanning;
+        }
+
+        /// <summary>
+        /// Objects that were placed on ARCore planes before the room was scanned stand on the scanned
+        /// surfaces from now on, so they stay on the grid that is drawn under them.
+        /// </summary>
+        void AdoptPlacedObjects()
+        {
+            adoptObjects = false;
+            if (roomScanner == null || !roomScanner.HasModel || Registry == null)
+            {
+                return;
+            }
+
+            foreach (var placed in Registry.Objects)
+            {
+                roomScanner.Adopt(placed);
+            }
         }
 
         void OnCameraFeedChanged()
@@ -295,6 +333,11 @@ namespace Erasmus.ARToolkit
 
         void Update()
         {
+            if (adoptObjects)
+            {
+                AdoptPlacedObjects();
+            }
+
             if (Time.unscaledTime >= nextStatusRefresh)
             {
                 nextStatusRefresh = Time.unscaledTime + StatusRefreshSeconds;
@@ -338,6 +381,31 @@ namespace Erasmus.ARToolkit
             var reason = args.state == ARSessionState.SessionTracking ? string.Empty : ", reason: " + ARSession.notTrackingReason;
             Debug.LogFormat(LogType.Log, LogOption.NoStacktrace, this,
                 "[Erasmus AR Toolkit] AR session: {0}{1}", args.state, reason);
+            NoteTracking(args.state == ARSessionState.SessionTracking, Time.unscaledTime);
+        }
+
+        /// <summary>
+        /// When ARCore finds its way again after a while, it may be somewhere else than before: the scanned
+        /// room is checked against what the camera sees.
+        /// </summary>
+        internal void NoteTracking(bool isTracking, float now)
+        {
+            if (!isTracking)
+            {
+                if (trackingLostAt < 0f)
+                {
+                    trackingLostAt = now;
+                }
+
+                return;
+            }
+
+            var wasLostFor = trackingLostAt >= 0f ? now - trackingLostAt : 0f;
+            trackingLostAt = -1f;
+            if (wasLostFor >= TrackingLossToVerify && roomScanner != null)
+            {
+                roomScanner.Reverify();
+            }
         }
 
         /// <summary>Shows or hides the AR planes (AR mode) or the virtual grid (Desktop mode).</summary>
@@ -368,15 +436,28 @@ namespace Erasmus.ARToolkit
 
         /// <summary>
         /// Parent for a newly placed object. In AR mode this is a new AR anchor at the pose, which keeps
-        /// the object fixed to the real world when the camera looks away and back. Otherwise the
-        /// placed-objects root. <paramref name="anchorHolder"/> is the anchor object (or null).
+        /// the object fixed to the real world when the camera looks away and back; after a room scan it
+        /// is a point of the scanned surface, which keeps the object on the grid drawn under it.
+        /// Otherwise the placed-objects root. <paramref name="anchorHolder"/> is the anchor object (or null).
         /// </summary>
         public Transform CreatePlacementParent(Pose pose, out GameObject anchorHolder)
+        {
+            return CreatePlacementParent(pose, -1, out anchorHolder);
+        }
+
+        /// <param name="levelId">The scanned surface the pose lies on, or -1 when that is not known.</param>
+        internal Transform CreatePlacementParent(Pose pose, int levelId, out GameObject anchorHolder)
         {
             anchorHolder = null;
             if (Mode != ToolkitMode.AR || arOriginObject == null)
             {
                 return placedObjectsRoot;
+            }
+
+            if (roomScanner != null && roomScanner.HasModel)
+            {
+                anchorHolder = roomScanner.CreateContentHolder(pose, levelId).gameObject;
+                return anchorHolder.transform;
             }
 
             var origin = arOriginObject.GetComponent<XROrigin>();

@@ -52,6 +52,10 @@ namespace Erasmus.ARToolkit
         public const string FindingFloor = "point the phone at the floor near your feet";
         public const string SetFloorButton = "Set Floor";
         public const string FloorSet = "This surface is the floor now.";
+        public const string ScanMoved =
+            "The scan no longer matches the room. Tap Scan Room, then Reset, and scan again.";
+        public const string TooFar =
+            "This is too far from where the scan started. Nothing is added here.";
 
         public static string ButtonText(bool isScanning) => isScanning ? FinishButton : ScanButton;
 
