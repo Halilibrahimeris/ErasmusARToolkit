@@ -263,6 +263,98 @@ namespace Erasmus.ARToolkit.Tests
             Assert.AreEqual(0f, scanner.Frame.HeightOffset, 1e-6f, "A model that is far off is not moved by guesswork.");
         }
 
+        [UnityTest]
+        public IEnumerator TrustedFloor_GetsTheWholeFloorSteadyMesh()
+        {
+            var depthMaterial = new Material(Shader.Find("Erasmus AR Toolkit/Surface Depth"));
+            scanner.ConfigureForTests(cameraObject.GetComponent<Camera>(), source, () => true, material, material, null,
+                depthMaterial);
+            scanner.StartScan();
+
+            // A phone that is held still counts less: the user walks along the floor.
+            var start = cameraObject.transform.position;
+            var giveUpAt = Time.realtimeSinceStartup + 10f;
+            while (scanner.Map.FloorState != FloorState.Trusted && Time.realtimeSinceStartup < giveUpAt)
+            {
+                cameraObject.transform.position = start + Vector3.right * (0.4f * Mathf.Sin(Time.time * 1.2f));
+                yield return null;
+            }
+
+            Assert.AreEqual(FloorState.Trusted, scanner.Map.FloorState);
+            yield return new WaitForSecondsRealtime(0.6f);
+
+            var floor = GameObject.Find("Surface " + scanner.Map.Floor.Level.Id);
+            Assert.IsNotNull(floor);
+            var mark = floor.transform.Find("Depth Mark");
+            Assert.IsNotNull(mark, "The floor has a depth correction.");
+            var mesh = mark.GetComponent<MeshFilter>().sharedMesh;
+            StringAssert.Contains("Floor Window", mesh.name);
+            Assert.AreEqual(SurfaceMeshBuilder.FloorWindowSize, mesh.bounds.size.x, 1e-3f);
+            Assert.AreEqual(SurfaceMeshBuilder.FloorWindowSize, mesh.bounds.size.z, 1e-3f);
+            Assert.IsTrue(mark.GetComponent<MeshRenderer>().enabled);
+            Assert.AreSame(mesh, floor.transform.Find("Depth Write").GetComponent<MeshFilter>().sharedMesh);
+            Assert.AreEqual(1, scanner.Diagnostics.DepthSlotsUsed);
+
+            // Far from where the window was made, it is made anew around the camera.
+            cameraObject.transform.position = start + new Vector3(5f, 0f, 0f);
+            yield return null;
+            yield return null;
+            var moved = mark.GetComponent<MeshFilter>().sharedMesh.bounds;
+            Assert.AreEqual(5f, moved.center.x, 1f);
+
+            UnityEngine.Object.DestroyImmediate(depthMaterial);
+        }
+
+        [UnityTest]
+        public IEnumerator NinthLevel_GetsNoSlot_FloorKeepsIts()
+        {
+            var depthMaterial = new Material(Shader.Find("Erasmus AR Toolkit/Surface Depth"));
+            var points = new SimulatedRoomSource(room, cameraObject.transform, precise: false);
+            scanner.ConfigureForTests(cameraObject.GetComponent<Camera>(), points, () => true, material, material, null,
+                depthMaterial);
+
+            // Planes of ARCore: the floor, and behind the camera nine shelves, each larger than the one before.
+            var map = scanner.Map;
+            map.AddPrior(0f, Rectangle(-3f, -8f, 3f, 3f));
+            for (var i = 0; i < 9; i++)
+            {
+                map.AddPrior(0.3f + 0.15f * i, Rectangle(-2f, -7f, -2f + 0.4f + 0.1f * i, -6.5f));
+            }
+
+            Assert.AreEqual(10, map.Levels.Count);
+            var floorId = map.Levels[0].Id;
+            var smallestId = map.Levels[1].Id;
+            var largestId = map.Levels[9].Id;
+
+            scanner.StartScan();
+            yield return WaitUntil(() => scanner.HasModel && scanner.Map.Floor.Level != null);
+            yield return new WaitForSecondsRealtime(0.6f);
+
+            Assert.AreEqual(10, map.Levels.Count);
+            Assert.AreEqual(floorId, map.Floor.Level.Id);
+            Assert.AreEqual(RenderOrder.SurfaceDepthSlots, scanner.Diagnostics.DepthSlotsUsed);
+            Assert.IsTrue(HasDepthCorrection(floorId), "The floor comes first.");
+            Assert.IsTrue(HasDepthCorrection(largestId));
+            Assert.IsFalse(HasDepthCorrection(smallestId), "There are eight corrections for ten surfaces.");
+
+            UnityEngine.Object.DestroyImmediate(depthMaterial);
+        }
+
+        static bool HasDepthCorrection(int levelId)
+        {
+            var surface = GameObject.Find("Surface " + levelId);
+            var mark = surface != null ? surface.transform.Find("Depth Mark") : null;
+            return mark != null && mark.GetComponent<MeshRenderer>().enabled;
+        }
+
+        static List<Vector2> Rectangle(float minX, float minZ, float maxX, float maxZ)
+        {
+            return new List<Vector2>
+            {
+                new Vector2(minX, minZ), new Vector2(maxX, minZ), new Vector2(maxX, maxZ), new Vector2(minX, maxZ),
+            };
+        }
+
         ToolkitObject Place(SurfaceHit hit)
         {
             var holder = scanner.CreateContentHolder(hit.Pose, hit.LevelId);

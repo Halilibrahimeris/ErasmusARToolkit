@@ -301,7 +301,18 @@ namespace Erasmus.ARToolkit
 
         void LateUpdate()
         {
-            if (!mapFrame.IsBegun || !mapFrame.Refresh(out var moved, out var turned))
+            if (!mapFrame.IsBegun)
+            {
+                return;
+            }
+
+            var changed = mapFrame.Refresh(out var moved, out var turned);
+            if (view != null && arCamera != null)
+            {
+                view.SetCamera(mapFrame.ToMap(arCamera.transform.position));
+            }
+
+            if (!changed)
             {
                 return;
             }
@@ -545,6 +556,16 @@ namespace Erasmus.ARToolkit
 
             target.HangFrom(bindings.Create(mapFrame.Root, new Pose(position, Quaternion.identity), level.Id));
             return true;
+        }
+
+        /// <summary>
+        /// The object stands on a scanned surface whose depth the scan steadies: real-world depth does not
+        /// cut into it there.
+        /// </summary>
+        internal bool CoversWithDepth(ToolkitObject target)
+        {
+            return view != null && target != null && target.HasSurface
+                   && view.HasDepthSlot(target.SurfaceHolder.LevelId);
         }
 
         /// <summary>The scanned surface right under a point (map space), or null.</summary>

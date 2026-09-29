@@ -127,6 +127,23 @@ namespace Erasmus.ARToolkit.Tests
         }
 
         [UnityTest]
+        public IEnumerator DesktopMode_HasNoContactDepthRenderer()
+        {
+            var center = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            Assert.IsTrue(manager.ActiveSurface.TryGetPose(center, out var pose));
+            var placed = ToolkitObjectFactory.SpawnPlaceable(manager.Config.Placeables[0], pose,
+                manager.PlacedObjectsRoot, manager.Config.ScaleLimits, manager.Theme);
+            manager.Registry.Add(placed);
+
+            // Past a refresh of the status line, which is when the patches are made.
+            yield return new WaitForSecondsRealtime(0.6f);
+
+            Assert.IsNull(manager.ContactDepth, "Depth patches are for AR with occlusion only.");
+            Assert.IsNull(GameObject.Find("Contact Depth"));
+            manager.ClearPlacedObjects();
+        }
+
+        [UnityTest]
         public IEnumerator Reticle_ShowsWhereObjectsCanBePlaced()
         {
             yield return null;

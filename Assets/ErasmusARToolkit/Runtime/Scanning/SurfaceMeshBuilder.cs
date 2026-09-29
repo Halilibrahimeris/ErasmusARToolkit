@@ -14,6 +14,10 @@ namespace Erasmus.ARToolkit
         public readonly List<Vector3> OccluderVertices = new List<Vector3>();
         public readonly List<int> OccluderTriangles = new List<int>();
 
+        /// <summary>What the depth correction of the surface is drawn with (see <see cref="SurfaceMeshBuilder.BuildSteady"/>).</summary>
+        public readonly List<Vector3> SteadyVertices = new List<Vector3>();
+        public readonly List<int> SteadyTriangles = new List<int>();
+
         /// <summary>Total length of the outline (meters) from the last build.</summary>
         public float OutlineLength { get; internal set; }
 
@@ -26,6 +30,23 @@ namespace Erasmus.ARToolkit
             OutlineTriangles.Clear();
             OccluderVertices.Clear();
             OccluderTriangles.Clear();
+            SteadyVertices.Clear();
+            SteadyTriangles.Clear();
+        }
+
+        /// <summary>Area of a list of triangles seen from above, in square meters.</summary>
+        public static float AreaOf(List<Vector3> vertices, List<int> triangles)
+        {
+            var area = 0f;
+            for (var i = 0; i < triangles.Count; i += 3)
+            {
+                var a = vertices[triangles[i]];
+                var b = vertices[triangles[i + 1]];
+                var c = vertices[triangles[i + 2]];
+                area += Mathf.Abs((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)) * 0.5f;
+            }
+
+            return area;
         }
 
         /// <summary>Area of the fill seen from above, in square meters.</summary>
@@ -63,6 +84,24 @@ namespace Erasmus.ARToolkit
         /// <summary>Surfaces less than this high above the floor get no occluder.</summary>
         public const float MinOccluderHeight = 0.15f;
 
+        /// <summary>
+        /// Side (meters) of the floor around the camera that the depth correction of a trusted floor covers
+        /// (see <see cref="BuildFloorWindow"/>).
+        /// </summary>
+        public const float FloorWindowSize = 12f;
+
+        /// <summary>The floor window is built again when the camera is this far (meters) from its center.</summary>
+        public const float FloorWindowReach = 3f;
+
+        const float FloorWindowQuad = 0.5f;
+        const float FloorWindowSnap = 1f;
+
+        /// <summary>
+        /// Longest quad (cells) of the mesh of a depth correction: how far that mesh is pulled toward the
+        /// camera is decided at its corners, so they may not lie far apart.
+        /// </summary>
+        const int MaxSteadyRun = 20;
+
         const float MinInsideValue = 0.05f;
 
         // Corner order around a square: 0 = (x, z), 1 = (x + 1, z), 2 = (x + 1, z + 1), 3 = (x, z + 1).
@@ -77,6 +116,8 @@ namespace Erasmus.ARToolkit
         readonly Vector3[] edges = new Vector3[4];
         float[] field = Array.Empty<float>();
         float[] blurred = Array.Empty<float>();
+        bool[] mask = Array.Empty<bool>();
+        bool[] grown = Array.Empty<bool>();
 
         /// <summary>
         /// Softens the edge field (a small 1-2-1 blur) before the edges are traced, so outlines follow the
@@ -153,6 +194,197 @@ namespace Erasmus.ARToolkit
             {
                 AddOccluder(output, occluderBottom.Value);
             }
+        }
+
+        /// <summary>
+        /// The mesh the depth correction of a surface is drawn with: every cell that is drawn or that depth
+        /// confirmed, and the cells around them, as whole cells at height 0. It reaches a little past the
+        /// drawn surface and covers its small holes, so an object that stands at the edge of the grid is
+        /// not cut by the noise of the real floor next to it.
+        /// </summary>
+        public void BuildSteady(SurfaceGrid grid, SurfaceMeshData output)
+        {
+            output.SteadyVertices.Clear();
+            output.SteadyTriangles.Clear();
+            EnsureMasks(grid.CellCount);
+            for (var i = 0; i < grid.CellCount; i++)
+            {
+                mask[i] = grid.IsShown(i) || grid.LogOddsAt(i) >= SurfaceEvidence.ConfirmedLogOdds;
+            }
+
+            for (var z = 0; z < grid.Depth; z++)
+            {
+                for (var x = 0; x < grid.Width; x++)
+                {
+                    grown[grid.IndexOf(x, z)] = HasNeighbor(grid, x, z);
+                }
+            }
+
+            AddCells(grid, grown, MaxSteadyRun, output.SteadyVertices, output.SteadyTriangles);
+        }
+
+        /// <summary>
+        /// The stand-in of a raised surface that hides what lies behind or under it: the cells that are
+        /// drawn and that depth confirmed, with walls around them. The top is at height 0 and the walls
+        /// reach down to -1: the view scales them to the floor. Cells that only a plane of ARCore claims
+        /// are left out, because a stand-in that reaches past the real table hides things it should not.
+        /// </summary>
+        public void BuildOccluder(SurfaceGrid grid, SurfaceMeshData output)
+        {
+            output.OccluderVertices.Clear();
+            output.OccluderTriangles.Clear();
+            EnsureMasks(grid.CellCount);
+            for (var i = 0; i < grid.CellCount; i++)
+            {
+                mask[i] = grid.IsShown(i) && grid.LogOddsAt(i) >= SurfaceEvidence.ConfirmedLogOdds;
+            }
+
+            var vertices = output.OccluderVertices;
+            var triangles = output.OccluderTriangles;
+            AddCells(grid, mask, int.MaxValue, vertices, triangles);
+            const float size = RoomSurfaceMap.CellSize;
+            for (var z = 0; z < grid.Depth; z++)
+            {
+                for (var x = 0; x < grid.Width; x++)
+                {
+                    if (!mask[grid.IndexOf(x, z)])
+                    {
+                        continue;
+                    }
+
+                    var minX = (grid.OriginX + x) * size;
+                    var minZ = (grid.OriginZ + z) * size;
+                    var maxX = minX + size;
+                    var maxZ = minZ + size;
+                    if (!IsSet(grid, mask, x, z - 1))
+                    {
+                        AddWall(vertices, triangles, minX, minZ, maxX, minZ);
+                    }
+
+                    if (!IsSet(grid, mask, x, z + 1))
+                    {
+                        AddWall(vertices, triangles, minX, maxZ, maxX, maxZ);
+                    }
+
+                    if (!IsSet(grid, mask, x - 1, z))
+                    {
+                        AddWall(vertices, triangles, minX, minZ, minX, maxZ);
+                    }
+
+                    if (!IsSet(grid, mask, x + 1, z))
+                    {
+                        AddWall(vertices, triangles, maxX, minZ, maxX, maxZ);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// The floor around the camera as one flat mesh at height 0: what the depth correction of a trusted
+        /// floor is drawn with. A floor goes on where it was not scanned, so its depth is steadied there
+        /// too, under objects that stand at the edge of the scan or beyond it.
+        /// </summary>
+        /// <param name="center">Center of the window (see <see cref="FloorWindowCenter"/>).</param>
+        public static void BuildFloorWindow(Vector2 center, List<Vector3> vertices, List<int> triangles)
+        {
+            vertices.Clear();
+            triangles.Clear();
+            var quads = Mathf.RoundToInt(FloorWindowSize / FloorWindowQuad);
+            var start = center - Vector2.one * (FloorWindowSize * 0.5f);
+            for (var z = 0; z <= quads; z++)
+            {
+                for (var x = 0; x <= quads; x++)
+                {
+                    vertices.Add(new Vector3(start.x + x * FloorWindowQuad, 0f, start.y + z * FloorWindowQuad));
+                }
+            }
+
+            var row = quads + 1;
+            for (var z = 0; z < quads; z++)
+            {
+                for (var x = 0; x < quads; x++)
+                {
+                    var corner = z * row + x;
+                    triangles.Add(corner);
+                    triangles.Add(corner + row);
+                    triangles.Add(corner + 1);
+                    triangles.Add(corner + 1);
+                    triangles.Add(corner + row);
+                    triangles.Add(corner + row + 1);
+                }
+            }
+        }
+
+        /// <summary>Where the floor window around a position lies: on whole meters, so it moves in steps.</summary>
+        public static Vector2 FloorWindowCenter(Vector3 position)
+        {
+            return new Vector2(Mathf.Round(position.x / FloorWindowSnap) * FloorWindowSnap,
+                Mathf.Round(position.z / FloorWindowSnap) * FloorWindowSnap);
+        }
+
+        void EnsureMasks(int count)
+        {
+            if (mask.Length < count)
+            {
+                mask = new bool[count];
+                grown = new bool[count];
+            }
+        }
+
+        bool HasNeighbor(SurfaceGrid grid, int x, int z)
+        {
+            for (var dz = -1; dz <= 1; dz++)
+            {
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    if (IsSet(grid, mask, x + dx, z + dz))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        static bool IsSet(SurfaceGrid grid, bool[] cells, int x, int z)
+        {
+            return grid.Contains(x, z) && cells[grid.IndexOf(x, z)];
+        }
+
+        /// <summary>Whole cells at height 0, merged along each row into quads of at most <paramref name="maxRun"/> cells.</summary>
+        static void AddCells(SurfaceGrid grid, bool[] cells, int maxRun, List<Vector3> vertices, List<int> triangles)
+        {
+            const float size = RoomSurfaceMap.CellSize;
+            for (var z = 0; z < grid.Depth; z++)
+            {
+                var runStart = -1;
+                for (var x = 0; x <= grid.Width; x++)
+                {
+                    var inside = x < grid.Width && cells[grid.IndexOf(x, z)];
+                    if (runStart >= 0 && (!inside || x - runStart >= maxRun))
+                    {
+                        var minX = (grid.OriginX + runStart) * size;
+                        var maxX = (grid.OriginX + x) * size;
+                        var minZ = (grid.OriginZ + z) * size;
+                        var maxZ = minZ + size;
+                        AddQuad(vertices, triangles, new Vector3(minX, 0f, minZ), new Vector3(minX, 0f, maxZ),
+                            new Vector3(maxX, 0f, maxZ), new Vector3(maxX, 0f, minZ));
+                        runStart = -1;
+                    }
+
+                    if (inside && runStart < 0)
+                    {
+                        runStart = x;
+                    }
+                }
+            }
+        }
+
+        static void AddWall(List<Vector3> vertices, List<int> triangles, float fromX, float fromZ, float toX, float toZ)
+        {
+            AddQuad(vertices, triangles, new Vector3(fromX, 0f, fromZ), new Vector3(toX, 0f, toZ),
+                new Vector3(toX, -1f, toZ), new Vector3(fromX, -1f, fromZ));
         }
 
         /// <summary>One quad over the fully inside squares <paramref name="firstX"/>..<paramref name="endX"/> - 1 of row z.</summary>

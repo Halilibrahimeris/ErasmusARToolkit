@@ -47,6 +47,8 @@ namespace Erasmus.ARToolkit
         ARPlaneSurfaces planeSurfaces;
         RoomScanner roomScanner;
         AROcclusionManager occlusionManager;
+        ContactDepthView contactDepth;
+        bool contactDepthDirty;
         float nextStatusRefresh;
         float lastUserActivity;
         bool keepingAwake;
@@ -132,6 +134,7 @@ namespace Erasmus.ARToolkit
 
             LogConfigIssues();
             Registry = new PlacedObjectRegistry(config.MaxPlacedObjects);
+            Registry.Changed += OnPlacedObjectsChanged;
             PlanesVisible = config.ShowPlanesOnStart;
             FindDesktopParts();
             EnsureOriginSettings();
@@ -263,6 +266,50 @@ namespace Erasmus.ARToolkit
             {
                 roomScanner.ScanningChanged -= OnScanningChanged;
             }
+
+            if (Registry != null)
+            {
+                Registry.Changed -= OnPlacedObjectsChanged;
+            }
+
+            contactDepth?.Dispose();
+            contactDepth = null;
+        }
+
+        void OnPlacedObjectsChanged()
+        {
+            contactDepthDirty = true;
+        }
+
+        /// <summary>The depth patches under placed objects (AR with occlusion only), or null.</summary>
+        internal ContactDepthView ContactDepth => contactDepth;
+
+        /// <summary>
+        /// Under objects that stand where the room scan steadies no depth (before a scan, beside it), the
+        /// depth of the real floor is steadied by patches of their own (see <see cref="ContactDepthView"/>).
+        /// </summary>
+        void RefreshContactDepth()
+        {
+            contactDepthDirty = false;
+            var wanted = Mode == ToolkitMode.AR && occlusionManager != null && occlusionManager.enabled
+                         && theme != null && theme.SurfaceDepthMaterial != null;
+            if (!wanted)
+            {
+                contactDepth?.Clear();
+                return;
+            }
+
+            if (contactDepth == null)
+            {
+                contactDepth = new ContactDepthView(theme.SurfaceDepthMaterial);
+            }
+
+            contactDepth.Refresh(Registry.Objects, IsCoveredByScan);
+        }
+
+        bool IsCoveredByScan(ToolkitObject placed)
+        {
+            return roomScanner != null && roomScanner.CoversWithDepth(placed);
         }
 
         void OnScanningChanged(bool isScanning)
@@ -338,10 +385,16 @@ namespace Erasmus.ARToolkit
                 AdoptPlacedObjects();
             }
 
+            if (contactDepthDirty)
+            {
+                RefreshContactDepth();
+            }
+
             if (Time.unscaledTime >= nextStatusRefresh)
             {
                 nextStatusRefresh = Time.unscaledTime + StatusRefreshSeconds;
                 RefreshStatus();
+                RefreshContactDepth();
                 SetKeepAwake(Mode == ToolkitMode.AR
                              && (IsScanning || Time.unscaledTime - lastUserActivity < KeepAwakeSeconds));
             }

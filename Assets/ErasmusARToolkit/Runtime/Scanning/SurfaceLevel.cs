@@ -176,16 +176,13 @@ namespace Erasmus.ARToolkit
             IsConfirmed = true;
         }
 
-        /// <summary>Moves the drawn height toward <see cref="Height"/>. True (and dirty) when it changed.</summary>
+        /// <summary>
+        /// Moves the drawn height toward <see cref="Height"/>. True when it changed. The cells stay as
+        /// they are: a surface at another height is the same surface.
+        /// </summary>
         internal bool UpdateDrawnHeight(float seconds)
         {
-            if (!heightLock.Update(Height, seconds, PlaneHeight, IsFloor))
-            {
-                return false;
-            }
-
-            IsDirty = true;
-            return true;
+            return heightLock.Update(Height, seconds, PlaneHeight, IsFloor);
         }
 
         internal void SetPriorWeight(float weight)

@@ -12,7 +12,7 @@ namespace Erasmus.ARToolkit.Tests
     public class RoomScannerPlayModeTests
     {
         const float TimeoutSeconds = 5f;
-        const string ViewRootName = "Room Surfaces (scanned)";
+        const string ViewRootName = MapFrame.RootName;
 
         GameObject scannerObject;
         GameObject cameraObject;
@@ -105,24 +105,38 @@ namespace Erasmus.ARToolkit.Tests
             yield return WaitForModel();
             scanner.SetVisible(false);
 
-            MeshRenderer fill = null, mark = null, write = null;
+            MeshRenderer fill = null, mark = null, unmark = null, write = null;
             foreach (var renderer in GameObject.Find(ViewRootName).GetComponentsInChildren<MeshRenderer>())
             {
                 switch (renderer.name)
                 {
                     case "Fill": fill = renderer; break;
                     case "Depth Mark": mark = renderer; break;
+                    case "Depth Unmark": unmark = renderer; break;
                     case "Depth Write": write = renderer; break;
                 }
             }
 
             Assert.IsNotNull(mark, "The scanned floor should get a depth mark pass.");
+            Assert.IsNotNull(unmark, "The scanned floor should get a depth unmark pass.");
             Assert.IsNotNull(write, "The scanned floor should get a depth write pass.");
             Assert.AreEqual(RenderOrder.SurfaceDepth, mark.sharedMaterial.renderQueue);
-            Assert.AreEqual(RenderOrder.SurfaceDepth + 1, write.sharedMaterial.renderQueue);
-            Assert.AreSame(fill.GetComponent<MeshFilter>().sharedMesh, mark.GetComponent<MeshFilter>().sharedMesh);
+            Assert.AreEqual(RenderOrder.SurfaceDepth + 1, unmark.sharedMaterial.renderQueue);
+            Assert.AreEqual(RenderOrder.SurfaceDepth + 2, write.sharedMaterial.renderQueue);
             Assert.IsTrue(mark.enabled && !mark.forceRenderingOff);
+            Assert.IsTrue(unmark.enabled && !unmark.forceRenderingOff);
             Assert.IsTrue(write.enabled && !write.forceRenderingOff);
+            Assert.IsTrue(fill.forceRenderingOff, "The grid is hidden.");
+
+            // The correction covers everything the grid covers, and a little more.
+            var steady = mark.GetComponent<MeshFilter>().sharedMesh;
+            Assert.AreSame(steady, write.GetComponent<MeshFilter>().sharedMesh);
+            var drawn = fill.GetComponent<MeshFilter>().sharedMesh.bounds;
+            Assert.LessOrEqual(steady.bounds.min.x, drawn.min.x + 1e-4f);
+            Assert.LessOrEqual(steady.bounds.min.z, drawn.min.z + 1e-4f);
+            Assert.GreaterOrEqual(steady.bounds.max.x, drawn.max.x - 1e-4f);
+            Assert.GreaterOrEqual(steady.bounds.max.z, drawn.max.z - 1e-4f);
+            Assert.AreEqual(scanner.Map.Levels[0].DrawnHeight, mark.transform.position.y, 1e-4f);
         }
 
         [UnityTest]
