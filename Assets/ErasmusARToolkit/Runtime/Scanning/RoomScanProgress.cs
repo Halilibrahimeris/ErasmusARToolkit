@@ -1,0 +1,60 @@
+using System.Globalization;
+
+namespace Erasmus.ARToolkit
+{
+    /// <summary>What the room scan has found so far.</summary>
+    public readonly struct RoomScanProgress
+    {
+        public RoomScanProgress(bool isScanning, int surfaceCount, float surfaceArea, float checkedArea, bool isPrecise)
+        {
+            IsScanning = isScanning;
+            SurfaceCount = surfaceCount;
+            SurfaceArea = surfaceArea;
+            CheckedArea = checkedArea;
+            IsPrecise = isPrecise;
+        }
+
+        public bool IsScanning { get; }
+
+        /// <summary>Surfaces (heights) with something drawn on them.</summary>
+        public int SurfaceCount { get; }
+
+        /// <summary>Drawn surface area in square meters.</summary>
+        public float SurfaceArea { get; }
+
+        /// <summary>Floor area the camera has checked, in square meters.</summary>
+        public float CheckedArea { get; }
+
+        /// <summary>False when the phone has no depth sensing and tracking points are used instead.</summary>
+        public bool IsPrecise { get; }
+    }
+
+    /// <summary>Texts the HUD shows for the room scan.</summary>
+    public static class RoomScanText
+    {
+        public const string ScanButton = "Scan Room";
+        public const string FinishButton = "Finish Scan";
+        public const string NoSurfaces = "No surfaces found. Tap Scan Room and move more slowly.";
+        public const string NoScannedSurface = "No scanned surface there. Tap Scan Room to add more.";
+        public const string ScanReset = "Scan cleared. Look around again.";
+        public const string LessPrecise =
+            "This phone has no depth sensing, so the scan uses tracking points and is less exact.";
+
+        public static string ButtonText(bool isScanning) => isScanning ? FinishButton : ScanButton;
+
+        public static string Progress(RoomScanProgress progress)
+        {
+            var text = $"Scanning · {Surfaces(progress.SurfaceCount)} · {Area(progress.CheckedArea)} m² checked";
+            return progress.IsPrecise ? text : text + " (tracking points)";
+        }
+
+        public static string Finished(RoomScanProgress progress)
+        {
+            return $"Scan finished: {Surfaces(progress.SurfaceCount)}, {Area(progress.SurfaceArea)} m².";
+        }
+
+        static string Area(float squareMeters) => squareMeters.ToString("0.0", CultureInfo.InvariantCulture);
+
+        static string Surfaces(int count) => count == 1 ? "1 surface" : count + " surfaces";
+    }
+}

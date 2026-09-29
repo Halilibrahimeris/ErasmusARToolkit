@@ -1,0 +1,20 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="True">
+    <ui:VisualElement class="tab">
+        <ui:HelpBox name="export-info" message-type="Info" />
+
+        <ui:Label class="section-title" text="Package" />
+        <ui:TextField name="version" label="Version" />
+        <ui:HelpBox name="version-error" text="Use a version like 1.0.0" message-type="Error" />
+        <ui:Toggle name="include-samples" label="Include Samples" value="true" />
+        <ui:VisualElement class="folder-row">
+            <ui:TextField name="output-folder" label="Output Folder" is-delayed="true" />
+            <ui:Button name="browse" text="Browse" />
+        </ui:VisualElement>
+        <ui:Label name="file-name" class="hint" />
+        <ui:Label name="asset-count" class="hint" />
+
+        <ui:Button name="export" class="big-button primary" text="Export .unitypackage" />
+        <ui:HelpBox name="result" message-type="None" />
+        <ui:Button name="reveal" text="Show In Explorer" />
+    </ui:VisualElement>
+</ui:UXML>

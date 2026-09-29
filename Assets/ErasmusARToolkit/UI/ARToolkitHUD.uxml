@@ -1,0 +1,64 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="False">
+    <Style src="ARToolkitHUD.uss" />
+    <ui:VisualElement name="hud-root" class="hud-root" picking-mode="Ignore">
+        <ui:VisualElement name="safe-area" class="safe-area" picking-mode="Ignore">
+
+            <ui:Label name="status" class="status" text="Checking AR support..." />
+
+            <!-- Shown while the room scan runs (AR mode). -->
+            <ui:VisualElement name="scan-panel" class="scan-panel hidden">
+                <ui:Label name="scan-progress" class="scan-progress" text="Scanning..." />
+                <ui:Button name="scan-reset" class="scan-reset" text="Reset" />
+            </ui:VisualElement>
+
+            <ui:VisualElement name="middle" class="middle" picking-mode="Ignore">
+                <!-- Opens when an object is tapped: its info plus transform editing. -->
+                <ui:VisualElement name="edit-panel" class="edit-panel hidden">
+                    <ui:VisualElement class="edit-header">
+                        <ui:Label name="edit-title" class="edit-title" text="Object" />
+                        <ui:Button name="edit-close" class="edit-close" text="Close" />
+                    </ui:VisualElement>
+                    <ui:Label name="edit-info" class="edit-info" />
+                    <ui:Label name="edit-values" class="edit-values" />
+                    <ui:Slider name="edit-scale" class="edit-scale" label="Scale" low-value="0.2" high-value="5" value="1" />
+                    <ui:VisualElement class="edit-row">
+                        <ui:Button name="edit-rotate-left" class="edit-button" text="Rotate -15°" />
+                        <ui:Button name="edit-rotate-right" class="edit-button" text="Rotate +15°" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="edit-row">
+                        <ui:Button name="edit-lower" class="edit-button" text="Lower" />
+                        <ui:Button name="edit-raise" class="edit-button" text="Raise" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="edit-row">
+                        <ui:Button name="edit-label" class="edit-button" text="Show Card" />
+                        <ui:Button name="edit-reset" class="edit-button" text="Reset" />
+                        <ui:Button name="edit-delete" class="edit-button edit-delete" text="Delete" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <ui:VisualElement class="middle-spacer" picking-mode="Ignore" />
+
+                <ui:VisualElement name="actions" class="actions">
+                    <ui:Button name="scan-button" class="action-button scan-button hidden" text="Scan Room" />
+                    <ui:Button name="planes-button" class="action-button" text="Hide Planes" />
+                    <ui:Button name="camera-button" class="action-button hidden" text="Camera" />
+                    <ui:Button name="clear-button" class="action-button" text="Clear All" />
+                    <ui:Button name="photo-button" class="action-button" text="Photo" />
+                    <ui:Button name="help-button" class="action-button" text="Help" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+
+            <ui:Label name="toast" class="toast" picking-mode="Ignore" />
+
+            <!-- Buttons for the placeable objects are added from code (one per config entry). -->
+            <ui:ScrollView name="placeables" class="placeables" mode="Horizontal"
+                           horizontal-scroller-visibility="Hidden" vertical-scroller-visibility="Hidden" />
+        </ui:VisualElement>
+
+        <ui:VisualElement name="help-panel" class="help-panel hidden">
+            <ui:Label class="help-title" text="How to use" />
+            <ui:Label name="help-text" class="help-text" />
+            <ui:Button name="help-close" class="action-button help-close" text="Close" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

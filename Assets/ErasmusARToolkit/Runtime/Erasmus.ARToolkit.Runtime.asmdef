@@ -1,0 +1,35 @@
+{
+    "name": "Erasmus.ARToolkit.Runtime",
+    "rootNamespace": "Erasmus.ARToolkit",
+    "references": [
+        "Unity.XR.ARFoundation",
+        "Unity.XR.ARSubsystems",
+        "Unity.XR.CoreUtils",
+        "Unity.InputSystem",
+        "UnityEngine.UI",
+        "Unity.TextMeshPro"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "ERASMUS_HAS_ARF",
+        "ERASMUS_HAS_INPUTSYSTEM"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.xr.arfoundation",
+            "expression": "6.0",
+            "define": "ERASMUS_HAS_ARF"
+        },
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "1.7",
+            "define": "ERASMUS_HAS_INPUTSYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}

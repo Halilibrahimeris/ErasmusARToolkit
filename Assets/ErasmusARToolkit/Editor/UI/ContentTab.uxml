@@ -1,0 +1,42 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" editor-extension-mode="True">
+    <ui:VisualElement class="tab">
+        <uie:ObjectField name="config-field" label="Toolkit Config" allow-scene-objects="false" />
+
+        <ui:VisualElement name="no-config">
+            <ui:HelpBox text="No config yet." message-type="Warning" />
+            <ui:Button name="create-config" class="big-button primary" text="Create Config" />
+        </ui:VisualElement>
+
+        <!-- Bound to the selected ARToolkitConfig through binding-path. -->
+        <ui:VisualElement name="config-editor">
+            <ui:VisualElement name="issues" class="issues" />
+            <ui:Label name="drop-area" class="drop-area" text="Drop prefabs here to add placeables, or images to add image targets" />
+
+            <ui:Label class="section-title" text="Placeable Objects (tap to place)" />
+            <uie:PropertyField binding-path="placeables" />
+
+            <ui:Label class="section-title" text="Image Targets (content on printed images)" />
+            <uie:PropertyField binding-path="imageTargets" />
+            <ui:VisualElement class="button-row">
+                <ui:Button name="rebuild-library" text="Rebuild Image Library" />
+                <ui:Button name="check-quality" text="Check Image Quality" />
+                <ui:Button name="select-library" text="Select Library" />
+            </ui:VisualElement>
+            <ui:VisualElement name="quality-results" class="quality-results" />
+
+            <ui:Foldout text="Behaviour &amp; Camera Settings" value="false">
+                <uie:PropertyField binding-path="maxPlacedObjects" />
+                <uie:PropertyField binding-path="scaleLimits" />
+                <uie:PropertyField binding-path="showPlanesOnStart" />
+                <uie:PropertyField binding-path="realWorldOcclusion" />
+                <uie:PropertyField binding-path="modeOverride" label="Mode" tooltip="Auto: AR on supported phones, Desktop everywhere else." />
+                <uie:PropertyField binding-path="useDeviceCamera" />
+                <uie:PropertyField binding-path="preferredCameraName" />
+                <uie:PropertyField binding-path="desktopSimulateImageTargets" />
+            </ui:Foldout>
+
+            <ui:Label class="section-title" text="Samples" />
+            <ui:Button name="add-samples" text="Add Sample Content (Box, Globe, EU Flag, Sample Marker)" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

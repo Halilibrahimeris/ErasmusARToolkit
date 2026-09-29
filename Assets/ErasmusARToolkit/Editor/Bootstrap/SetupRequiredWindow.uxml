@@ -1,0 +1,14 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="True">
+    <ui:VisualElement class="window">
+        <ui:VisualElement class="header">
+            <ui:Label class="header-title" text="Erasmus AR Toolkit" />
+        </ui:VisualElement>
+        <ui:VisualElement class="tab">
+            <ui:HelpBox message-type="Info"
+                        text="The toolkit needs a few Unity packages before it can be used:&#10;• AR Foundation (cross-platform AR)&#10;• Google ARCore XR Plugin (Android)&#10;• Input System (touch and mouse)" />
+            <ui:Label name="missing" class="hint" />
+            <ui:Button name="install" class="big-button primary" text="Install Required Packages" />
+            <ui:HelpBox name="done" message-type="None" text="All packages are installed. Waiting for scripts to compile..." />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

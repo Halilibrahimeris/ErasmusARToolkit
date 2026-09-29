@@ -1,0 +1,192 @@
+/* Erasmus AR Toolkit - editor window styles (works with light and dark editor themes). */
+
+:root {
+    --erasmus-blue: rgb(0, 51, 153);
+    --erasmus-blue-hover: rgb(20, 80, 190);
+    --erasmus-yellow: rgb(255, 204, 0);
+    --ok-color: rgb(76, 175, 80);
+    --warn-color: rgb(255, 152, 0);
+}
+
+.window {
+    flex-grow: 1;
+}
+
+/* Header */
+.header {
+    flex-direction: row;
+    align-items: center;
+    padding: 8px 10px;
+    background-color: var(--erasmus-blue);
+}
+
+.header-title {
+    flex-grow: 1;
+    color: rgb(255, 255, 255);
+    font-size: 16px;
+    -unity-font-style: bold;
+}
+
+.header-version {
+    color: var(--erasmus-yellow);
+    font-size: 11px;
+}
+
+/* Tab bar */
+.tab-bar {
+    flex-direction: row;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--unity-colors-default-border);
+}
+
+.tab-button {
+    flex-grow: 1;
+    height: 30px;
+    margin: 0;
+    border-width: 0;
+    border-radius: 0;
+    border-bottom-width: 3px;
+    border-bottom-color: rgba(0, 0, 0, 0);
+    background-color: var(--unity-colors-toolbar-background);
+    -unity-font-style: bold;
+}
+
+.tab-button:hover {
+    background-color: var(--unity-colors-button-background-hover);
+}
+
+.tab-button--active {
+    border-bottom-color: var(--erasmus-yellow);
+    background-color: var(--unity-colors-window-background);
+}
+
+.tab-content {
+    flex-grow: 1;
+}
+
+.tab {
+    padding: 8px 10px 16px 10px;
+}
+
+.hidden {
+    display: none;
+}
+
+/* Sections */
+.section-title {
+    margin-top: 14px;
+    margin-bottom: 4px;
+    padding-bottom: 2px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--unity-colors-default-border);
+    font-size: 13px;
+    -unity-font-style: bold;
+}
+
+.hint {
+    margin: 2px 3px;
+    font-size: 11px;
+    color: var(--unity-colors-label-text-focus);
+    opacity: 0.8;
+    white-space: normal;
+}
+
+.button-row {
+    flex-direction: row;
+    flex-wrap: wrap;
+}
+
+.button-row > Button {
+    flex-grow: 1;
+}
+
+.folder-row {
+    flex-direction: row;
+    align-items: center;
+}
+
+.folder-row > TextField {
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+.big-button {
+    height: 32px;
+    margin-top: 6px;
+    -unity-font-style: bold;
+}
+
+.primary {
+    background-color: var(--erasmus-blue);
+    color: rgb(255, 255, 255);
+    border-color: var(--erasmus-blue);
+}
+
+.primary:hover {
+    background-color: var(--erasmus-blue-hover);
+}
+
+.link-button {
+    align-self: flex-start;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: rgb(80, 150, 255);
+    font-size: 11px;
+    padding: 0 4px;
+}
+
+/* Status rows (checklist) */
+.status-row {
+    flex-direction: row;
+    align-items: center;
+    min-height: 24px;
+    padding: 1px 2px;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    margin: 0 8px 0 4px;
+    border-radius: 5px;
+    background-color: var(--warn-color);
+}
+
+.status-row--ok .status-dot {
+    background-color: var(--ok-color);
+}
+
+.status-label {
+    flex-grow: 1;
+    flex-shrink: 1;
+    white-space: normal;
+}
+
+.status-action {
+    width: 140px;
+}
+
+/* Content tab */
+.drop-area {
+    height: 48px;
+    margin: 6px 0;
+    border-width: 2px;
+    border-color: var(--unity-colors-default-border);
+    border-radius: 6px;
+    -unity-text-align: middle-center;
+    white-space: normal;
+    opacity: 0.85;
+}
+
+.drop-area--hover {
+    border-color: var(--erasmus-yellow);
+    background-color: rgba(255, 204, 0, 0.12);
+}
+
+.issues > HelpBox,
+.quality-results > HelpBox {
+    margin-top: 2px;
+}
+
+.scene-list > Label {
+    margin-left: 6px;
+}

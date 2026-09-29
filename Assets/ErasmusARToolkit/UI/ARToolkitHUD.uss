@@ -1,0 +1,332 @@
+/* Erasmus AR Toolkit - runtime HUD styles.
+   Change the variables below to re-color the whole HUD. */
+
+:root {
+    --primary-color: rgba(0, 51, 153, 0.92);     /* EU blue */
+    --accent-color: rgb(255, 204, 0);            /* EU yellow */
+    --panel-color: rgba(0, 0, 0, 0.65);
+    --text-color: rgb(255, 255, 255);
+    --accent-text-color: rgb(10, 10, 10);
+    --font-size: 34px;
+}
+
+.hidden {
+    display: none;
+}
+
+.hud-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+}
+
+.safe-area {
+    flex-grow: 1;
+    flex-direction: column;
+}
+
+/* Top status line */
+.status {
+    margin: 24px 24px 0 24px;
+    padding: 18px 24px;
+    background-color: var(--panel-color);
+    border-radius: 18px;
+    color: var(--text-color);
+    font-size: var(--font-size);
+    white-space: normal;
+    -unity-text-align: middle-center;
+}
+
+/* Room scan: progress line with a reset button, shown while scanning */
+.scan-panel {
+    flex-direction: row;
+    align-items: center;
+    margin: 12px 24px 0 24px;
+    padding: 10px 12px 10px 24px;
+    background-color: var(--panel-color);
+    border-radius: 18px;
+    border-left-width: 6px;
+    border-left-color: var(--accent-color);
+}
+
+.scan-progress {
+    flex-grow: 1;
+    flex-shrink: 1;
+    color: var(--accent-color);
+    font-size: 28px;
+    white-space: normal;
+}
+
+.scan-reset {
+    height: 64px;
+    min-width: 150px;
+    margin: 0 0 0 12px;
+    border-width: 0;
+    border-radius: 14px;
+    background-color: rgba(255, 255, 255, 0.15);
+    color: var(--text-color);
+    font-size: 28px;
+}
+
+/* The scan button turns yellow while scanning (it then reads "Finish Scan"). */
+.scan-button.scanning,
+.scan-button.scanning:hover {
+    background-color: var(--accent-color);
+    color: var(--accent-text-color);
+}
+
+/* Middle row: edit panel (left) and action buttons (right) */
+.middle {
+    flex-grow: 1;
+    flex-direction: row;
+    align-items: flex-start;
+}
+
+/* Keeps the action buttons on the right whether or not the edit panel is open. */
+.middle-spacer {
+    flex-grow: 1;
+}
+
+/* Edit panel, opened by tapping an object */
+.edit-panel {
+    align-self: flex-start;
+    width: 560px;
+    max-width: 62%;
+    max-height: 100%;
+    overflow: hidden;
+    margin: 16px 0 0 24px;
+    padding: 16px 20px;
+    background-color: var(--panel-color);
+    border-radius: 18px;
+    border-left-width: 6px;
+    border-left-color: var(--accent-color);
+}
+
+.edit-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.edit-title {
+    flex-shrink: 1;
+    color: var(--accent-color);
+    font-size: 34px;
+    -unity-font-style: bold;
+    white-space: normal;
+}
+
+.edit-close {
+    height: 56px;
+    min-width: 140px;
+    border-width: 0;
+    border-radius: 14px;
+    background-color: rgba(255, 255, 255, 0.15);
+    color: var(--text-color);
+    font-size: 28px;
+}
+
+.edit-info {
+    color: var(--text-color);
+    font-size: 26px;
+    white-space: normal;
+    margin-bottom: 10px;
+}
+
+.edit-values {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 22px;
+    white-space: normal;
+    margin-bottom: 8px;
+}
+
+.edit-scale {
+    margin: 6px 0 12px 0;
+}
+
+.edit-scale Label {
+    color: var(--text-color);
+    font-size: 28px;
+    min-width: 110px;
+}
+
+.edit-scale #unity-dragger {
+    width: 44px;
+    height: 44px;
+    margin-top: -18px;
+    border-radius: 22px;
+    background-color: var(--accent-color);
+    border-width: 0;
+}
+
+.edit-scale #unity-tracker {
+    height: 10px;
+    border-radius: 5px;
+    background-color: rgba(255, 255, 255, 0.3);
+    border-width: 0;
+}
+
+.edit-row {
+    flex-direction: row;
+    margin-top: 8px;
+}
+
+.edit-button {
+    flex-grow: 1;
+    flex-basis: 0;
+    height: 62px;
+    margin: 0 5px;
+    border-width: 0;
+    border-radius: 14px;
+    background-color: var(--primary-color);
+    color: var(--text-color);
+    font-size: 26px;
+    -unity-font-style: bold;
+}
+
+.edit-button:active {
+    scale: 0.95 0.95;
+}
+
+.edit-button:disabled {
+    opacity: 0.4;
+}
+
+.edit-delete {
+    background-color: rgb(170, 30, 30);
+}
+
+.actions {
+    margin: 24px 24px 0 0;
+    width: 230px;
+}
+
+.action-button {
+    height: 92px;
+    margin: 0 0 14px 0;
+    padding: 0 12px;
+    border-width: 0;
+    border-radius: 18px;
+    background-color: var(--primary-color);
+    color: var(--text-color);
+    font-size: var(--font-size);
+    -unity-font-style: bold;
+    transition-property: scale, background-color;
+    transition-duration: 0.1s;
+}
+
+.action-button:hover {
+    background-color: rgb(20, 80, 190);
+}
+
+.action-button:active {
+    scale: 0.95 0.95;
+}
+
+.action-button:disabled {
+    opacity: 0.45;
+}
+
+/* Short notifications above the object bar */
+.toast {
+    align-self: center;
+    max-width: 90%;
+    margin-bottom: 16px;
+    padding: 16px 28px;
+    background-color: var(--panel-color);
+    border-radius: 18px;
+    color: var(--accent-color);
+    font-size: var(--font-size);
+    white-space: normal;
+    -unity-text-align: middle-center;
+    opacity: 0;
+    transition-property: opacity;
+    transition-duration: 0.35s;
+}
+
+.toast.visible {
+    opacity: 1;
+}
+
+/* Bottom bar with one button per placeable object */
+.placeables {
+    flex-shrink: 0;
+    background-color: var(--panel-color);
+    padding: 24px 0;
+}
+
+.placeables .unity-scroll-view__content-container {
+    flex-direction: row;
+    padding: 0 24px;
+}
+
+.placeable-button {
+    width: 250px;
+    height: 130px;
+    margin: 0 18px 0 0;
+    padding: 8px;
+    border-width: 0;
+    border-radius: 18px;
+    background-color: var(--primary-color);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.placeable-button.selected {
+    background-color: var(--accent-color);
+}
+
+.placeable-icon {
+    width: 72px;
+    height: 72px;
+    -unity-background-scale-mode: scale-to-fit;
+}
+
+.placeable-label {
+    color: var(--text-color);
+    font-size: var(--font-size);
+    -unity-text-align: middle-center;
+    white-space: normal;
+}
+
+.placeable-button.selected .placeable-label {
+    color: var(--accent-text-color);
+    -unity-font-style: bold;
+}
+
+/* Full-screen help overlay */
+.help-panel {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    padding: 120px 8%;
+    background-color: rgba(0, 0, 0, 0.88);
+    align-items: stretch;
+}
+
+.help-title {
+    color: var(--accent-color);
+    font-size: 52px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+    margin-bottom: 40px;
+}
+
+.help-text {
+    flex-grow: 1;
+    color: var(--text-color);
+    font-size: var(--font-size);
+    white-space: normal;
+}
+
+.help-close {
+    align-self: center;
+    width: 320px;
+    height: 100px;
+}

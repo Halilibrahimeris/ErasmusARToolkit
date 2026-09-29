@@ -1,0 +1,24 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="True">
+    <ui:VisualElement class="tab">
+        <ui:Label class="section-title" text="Target" />
+        <ui:RadioButtonGroup name="platform" choices="Android (APK),Windows (EXE)" value="0" />
+        <ui:VisualElement class="folder-row">
+            <ui:TextField name="output-folder" label="Output Folder" is-delayed="true" />
+            <ui:Button name="browse" text="Browse" />
+        </ui:VisualElement>
+        <ui:Label name="output-file" class="hint" />
+
+        <ui:Label class="section-title" text="Scenes" />
+        <ui:HelpBox name="no-scenes" text="No scenes in Build Settings." message-type="Warning" />
+        <ui:VisualElement name="scene-list" class="scene-list" />
+
+        <ui:Label class="section-title" text="Build" />
+        <ui:HelpBox name="platform-hint" message-type="Info" />
+        <ui:HelpBox name="problem" message-type="Error" />
+        <ui:VisualElement class="button-row">
+            <ui:Button name="build" class="big-button primary" text="Build" />
+            <ui:Button name="build-run" class="big-button" text="Build And Run" />
+        </ui:VisualElement>
+        <ui:HelpBox name="result" message-type="None" />
+    </ui:VisualElement>
+</ui:UXML>

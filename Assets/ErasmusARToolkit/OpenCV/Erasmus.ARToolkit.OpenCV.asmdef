@@ -1,0 +1,35 @@
+{
+    "name": "Erasmus.ARToolkit.OpenCV",
+    "rootNamespace": "Erasmus.ARToolkit.OpenCV",
+    "references": [
+        "Erasmus.ARToolkit.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor",
+        "WindowsStandalone64"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "OpenCvSharp.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "ERASMUS_HAS_ARF",
+        "ERASMUS_HAS_INPUTSYSTEM"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.xr.arfoundation",
+            "expression": "6.0",
+            "define": "ERASMUS_HAS_ARF"
+        },
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "1.7",
+            "define": "ERASMUS_HAS_INPUTSYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}

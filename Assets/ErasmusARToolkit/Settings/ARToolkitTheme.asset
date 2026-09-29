@@ -1,0 +1,25 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f129d874c7dcac04dae24f9a7a9fcd20, type: 3}
+  m_Name: ARToolkitTheme
+  m_EditorClassIdentifier: Erasmus.ARToolkit.Runtime::Erasmus.ARToolkit.ToolkitTheme
+  groundMaterial: {fileID: 2100000, guid: 5586cb8551e26484b8378a55e29b8379, type: 2}
+  highlightMaterial: {fileID: 2100000, guid: 3e8b1651b634e7648b7fe43f9418b7f7, type: 2}
+  imageTargetMaterial: {fileID: 2100000, guid: 700c8d584d4766e408fbc178aaff9b79, type: 2}
+  labelBackgroundMaterial: {fileID: 2100000, guid: 32a2c9665d0f0fb4fa2d487a487f31c0, type: 2}
+  occluderMaterial: {fileID: 2100000, guid: 61c6f31fd44d8fa42a44dec4de782727, type: 2}
+  labelFont: {fileID: 0}
+  labelTitleColor: {r: 1, g: 0.8, b: 0, a: 1}
+  labelTextColor: {r: 1, g: 1, b: 1, a: 1}
+  accentColor: {r: 1, g: 0.8, b: 0, a: 1}
+  gridLineColor: {r: 1, g: 1, b: 1, a: 0.55}
+  gridFillColor: {r: 0.1, g: 0.25, b: 0.55, a: 0.25}

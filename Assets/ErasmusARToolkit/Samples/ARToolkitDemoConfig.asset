@@ -1,0 +1,56 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f57c5d0ba640bbb4082eefbcec2ac151, type: 3}
+  m_Name: ARToolkitDemoConfig
+  m_EditorClassIdentifier: Erasmus.ARToolkit.Runtime::Erasmus.ARToolkit.ARToolkitConfig
+  placeables:
+  - displayName: Box
+    prefab: {fileID: 8036105203090142988, guid: b1ebf0359c25b424b92131eb6042ede4, type: 3}
+    icon: {fileID: 0}
+    defaultScale: 1
+    info:
+      title: Erasmus Box
+      body: A simple 15 cm cube. Drag it, pinch to scale, twist to rotate.
+      showOnStart: 0
+  - displayName: Globe
+    prefab: {fileID: 8819862260122303053, guid: 87099d44806a7054d87e1e9628f92d32, type: 3}
+    icon: {fileID: 0}
+    defaultScale: 1
+    info:
+      title: Globe
+      body: Erasmus+ connects students and teachers all over Europe.
+      showOnStart: 0
+  - displayName: EU Flag
+    prefab: {fileID: 5316932698288312756, guid: ef6544268537c1145bbd2fb34b79f5ca, type: 3}
+    icon: {fileID: 0}
+    defaultScale: 1
+    info:
+      title: EU Flag
+      body: Twelve golden stars on a blue background.
+      showOnStart: 0
+  imageTargets:
+  - name: SampleMarker
+    texture: {fileID: 2800000, guid: f2b829c5791c887408db07c136f902be, type: 3}
+    widthMeters: 0.2
+    prefab: {fileID: 8819862260122303053, guid: 87099d44806a7054d87e1e9628f92d32, type: 3}
+    info:
+      title: Image Target
+      body: This globe appears when the camera sees the printed sample marker.
+      showOnStart: 1
+  imageLibrary: {fileID: 11400000, guid: e42d70b28092f8247b2668c9b9339c05, type: 2}
+  maxPlacedObjects: 10
+  scaleLimits: {x: 0.2, y: 5}
+  showPlanesOnStart: 1
+  modeOverride: 0
+  useDeviceCamera: 1
+  preferredCameraName: 
+  desktopSimulateImageTargets: 1

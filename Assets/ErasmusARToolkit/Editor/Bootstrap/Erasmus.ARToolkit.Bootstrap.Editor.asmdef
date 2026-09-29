@@ -1,0 +1,27 @@
+{
+    "name": "Erasmus.ARToolkit.Bootstrap.Editor",
+    "rootNamespace": "Erasmus.ARToolkit.Editor",
+    "references": [],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.xr.arfoundation",
+            "expression": "6.0",
+            "define": "ERASMUS_HAS_ARF"
+        },
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "1.7",
+            "define": "ERASMUS_HAS_INPUTSYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}

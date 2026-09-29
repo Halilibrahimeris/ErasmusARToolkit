@@ -1,0 +1,12 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="True">
+    <Style src="ARToolkitWindow.uss" />
+    <ui:VisualElement class="window">
+        <ui:VisualElement class="header">
+            <ui:Label class="header-title" text="Erasmus AR Toolkit" />
+            <ui:Label name="version" class="header-version" />
+        </ui:VisualElement>
+        <!-- One button per tab is added from code. -->
+        <ui:VisualElement name="tab-bar" class="tab-bar" />
+        <ui:ScrollView name="tab-content" class="tab-content" />
+    </ui:VisualElement>
+</ui:UXML>

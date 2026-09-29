@@ -1,0 +1,24 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" xmlns:e="Erasmus.ARToolkit.Editor" editor-extension-mode="True">
+    <ui:VisualElement class="tab">
+        <ui:Label class="section-title" text="Config" />
+        <uie:ObjectField name="config-field" label="Toolkit Config" allow-scene-objects="false" />
+        <ui:Button name="create-config" text="Create Config" />
+
+        <ui:Label class="section-title" text="Create" />
+        <ui:HelpBox text="A toolkit scene contains an AR rig (used on Android), a Desktop rig (used on PC and in the Editor), a HUD and a light. Press Play to test it right away in Desktop mode." message-type="None" />
+        <ui:Button name="create-scene" class="big-button primary" text="Create New AR Scene" />
+        <ui:Button name="add-to-scene" text="Add AR Toolkit To Open Scene" />
+        <ui:Button name="open-demo" text="Open Demo Scene" />
+
+        <ui:Label class="section-title" text="Open Scene" />
+        <ui:HelpBox name="no-toolkit" text="The open scene has no AR Toolkit." message-type="Warning" />
+        <ui:VisualElement name="scene-status">
+            <e:StatusRow name="row-manager" text="AR Toolkit found" />
+            <e:StatusRow name="row-scene-config" text="Config assigned" action-text="Assign Selected" />
+            <ui:HelpBox name="config-mismatch" text="The scene uses a different config than the one selected above." message-type="Info" />
+            <ui:Button name="use-selected-config" text="Use Selected Config In Scene" />
+            <e:StatusRow name="row-in-build" text="Scene is in Build Settings" action-text="Add As First Scene" />
+            <ui:Button name="select-manager" text="Select AR Toolkit In Hierarchy" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

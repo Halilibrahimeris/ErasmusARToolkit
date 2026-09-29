@@ -1,0 +1,32 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:e="Erasmus.ARToolkit.Editor" editor-extension-mode="True">
+    <ui:VisualElement class="tab">
+        <ui:HelpBox text="Run the steps below once per project. 'Run All Setup Steps' does them in order." message-type="Info" />
+        <ui:Button name="run-all" class="big-button primary" text="Run All Setup Steps" />
+
+        <ui:Label class="section-title" text="Packages" />
+        <e:StatusRow name="row-arfoundation" text="AR Foundation" />
+        <e:StatusRow name="row-arcore" text="Google ARCore XR Plugin" action-text="Install" />
+        <e:StatusRow name="row-input" text="Input System is the active input handling" action-text="Player Settings" />
+        <e:StatusRow name="row-tmp" text="TextMeshPro Essential Resources" action-text="Import" />
+
+        <ui:Label class="section-title" text="Platforms" />
+        <e:StatusRow name="row-android-module" text="Android Build Support installed" action-text="How to install" />
+        <e:StatusRow name="row-windows-module" text="Windows Build Support installed" action-text="How to install" />
+        <e:StatusRow name="row-urp" text="Universal Render Pipeline active" action-text="Graphics Settings" />
+
+        <ui:Label class="section-title" text="Android AR" />
+        <e:StatusRow name="row-arcore-enabled" text="ARCore enabled in XR Plug-in Management" action-text="Configure Android" />
+        <e:StatusRow name="row-android-player" text="IL2CPP, ARM64, Android API 24 or newer" action-text="Configure Android" />
+        <e:StatusRow name="row-urp-features" text="AR camera image enabled on URP renderers" action-text="Add Features" />
+        <e:StatusRow name="row-validation" text="XR Project Validation" action-text="Fix All" />
+        <ui:Button name="open-validation" class="link-button" text="Show details in Project Validation" />
+
+        <ui:Label class="section-title" text="Toolkit" />
+        <e:StatusRow name="row-config" text="Toolkit config asset" action-text="Create Config" />
+
+        <ui:Label class="section-title" text="App Identity" />
+        <ui:TextField name="product-name" label="Product Name" is-delayed="true" />
+        <ui:TextField name="company-name" label="Company Name" is-delayed="true" />
+        <ui:TextField name="package-name" label="Android Package" readonly="true" />
+    </ui:VisualElement>
+</ui:UXML>
