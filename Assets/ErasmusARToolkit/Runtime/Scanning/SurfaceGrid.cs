@@ -14,7 +14,9 @@ namespace Erasmus.ARToolkit
         float[] logOdds = Array.Empty<float>();
         bool[] prior = Array.Empty<bool>();
         bool[] shown = Array.Empty<bool>();
+        bool[] kept = Array.Empty<bool>();
         CellState[] states = Array.Empty<CellState>();
+        float priorWeight = SurfaceEvidence.PriorWeight;
 
         public int OriginX { get; private set; }
         public int OriginZ { get; private set; }
@@ -23,7 +25,9 @@ namespace Erasmus.ARToolkit
         public int CellCount => Width * Depth;
 
         /// <summary>Resizes the grid and marks every cell unknown and hidden.</summary>
-        public void Reset(int originX, int originZ, int width, int depth)
+        /// <param name="cellPriorWeight">Head start of the cells inside a detected plane (see <see cref="SurfaceEvidence"/>).</param>
+        public void Reset(int originX, int originZ, int width, int depth,
+            float cellPriorWeight = SurfaceEvidence.PriorWeight)
         {
             if (width <= 0 || depth <= 0)
             {
@@ -34,12 +38,14 @@ namespace Erasmus.ARToolkit
             OriginZ = originZ;
             Width = width;
             Depth = depth;
+            priorWeight = cellPriorWeight;
             var count = width * depth;
             if (logOdds.Length < count)
             {
                 logOdds = new float[count];
                 prior = new bool[count];
                 shown = new bool[count];
+                kept = new bool[count];
                 states = new CellState[count];
                 return;
             }
@@ -47,8 +53,12 @@ namespace Erasmus.ARToolkit
             Array.Clear(logOdds, 0, count);
             Array.Clear(prior, 0, count);
             Array.Clear(shown, 0, count);
+            Array.Clear(kept, 0, count);
             Array.Clear(states, 0, count);
         }
+
+        /// <summary>Head start of the cells inside a detected plane.</summary>
+        public float PriorWeight => priorWeight;
 
         public bool Contains(int x, int z) => x >= 0 && z >= 0 && x < Width && z < Depth;
 
@@ -59,12 +69,21 @@ namespace Erasmus.ARToolkit
             var index = IndexOf(x, z);
             logOdds[index] = cellLogOdds;
             prior[index] = cellPrior;
-            states[index] = SurfaceEvidence.Classify(cellLogOdds, cellPrior);
+            states[index] = SurfaceEvidence.Classify(cellLogOdds, cellPrior, priorWeight);
         }
 
         public CellState StateAt(int index) => states[index];
 
-        public float ScoreAt(int index) => SurfaceEvidence.Score(logOdds[index], prior[index]);
+        public float ScoreAt(int index) => SurfaceEvidence.Score(logOdds[index], prior[index], priorWeight);
+
+        public float LogOddsAt(int index) => logOdds[index];
+
+        public bool HasPriorAt(int index) => prior[index];
+
+        /// <summary>The cell counted as a surface at the last redraw (before pieces were dropped and holes filled).</summary>
+        public bool WasKept(int index) => kept[index];
+
+        public void SetKept(int index, bool value) => kept[index] = value;
 
         public bool IsShown(int index) => shown[index];
 

@@ -42,6 +42,11 @@ namespace Erasmus.ARToolkit.Editor
                 return "No scenes in Build Settings. Create an AR scene in the Scene tab first.";
             }
 
+            if (platform == BuildPlatform.Android && !ToolkitAssets.HasRoomScanAssets())
+            {
+                return "Room scan materials are missing. Press 'Run All Setup Steps' in the Setup tab.";
+            }
+
             var config = ToolkitAssets.FindConfig();
             if (config != null && ConfigValidator.HasErrors(ConfigValidator.Validate(config)))
             {
@@ -53,6 +58,12 @@ namespace Erasmus.ARToolkit.Editor
 
         public static BuildReport Build(BuildPlatform platform, string outputFolder, bool run)
         {
+            if (platform == BuildPlatform.Android)
+            {
+                // Repaired here and not in the check above: that one runs whenever the Build tab refreshes.
+                ToolkitAssets.EnsureRoomScanAssets(ToolkitAssets.GetOrCreateTheme());
+            }
+
             var problem = GetBlockingProblem(platform);
             if (problem != null)
             {

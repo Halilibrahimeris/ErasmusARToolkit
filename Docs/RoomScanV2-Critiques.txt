@@ -1,0 +1,550 @@
+
+=========== critic:code-reality verdict=sound-with-fixes issues=29 ===========
+
+1. [blocker] P0 ARToolkitManager.EnsureOriginSettings (Awake) vs Runtime/Core/ARToolkitManager.cs:108-132
+   PROBLEM: The plan calls `GetComponent<XROrigin>().CameraYOffset = 0f` on the manager itself. ARToolkitManager sits on the scene root and the XR Origin is a child. The call returns null, so Awake throws a NullReferenceException on every scene.
+   EVIDENCE: Editor/Services/SceneBuilder.cs:105 `root.AddComponent<ARToolkitManager>()`; SceneBuilder.cs:77 and 141-168 build the XR Origin as the child 'XR Origin (Mobile AR)'; ARToolkitManager.cs:26 holds it as `arOriginObject`.
+   FIX: Use `var xr = arOriginObject != null ? arOriginObject.GetComponent<XROrigin>() : null; if (xr != null) xr.CameraYOffset = 0f;`. Do the same in SceneUpgrader.Apply.
+
+2. [blocker] P0 Create ScanDiagnostics.cs vs P1 FloorModel.cs
+   PROBLEM: The P0 struct has a field `FloorState Floor`, but the `FloorState` enum is only created in P1 (FloorModel.cs). P0 does not compile on its own. Several other fields (Reflections, PlaneFloorHeight, DepthLagMs) are also only computed by P1 code.
+   EVIDENCE: Plan P0 'ScanDiagnostics { ... FloorState Floor; ... }' vs P1 Create table 'FloorModel.cs ... enum FloorState { Unknown, Candidate, Trusted }'.
+   FIX: Declare `enum FloorState` in ScanDiagnostics.cs in P0 (FloorModel reuses it), or add the P1-only fields in P1.
+
+3. [blocker] P1 SurfaceLevel.DrawnHeight + RoomSurfaceMap.Raycast uses DrawnHeight; RoomSurfaceMap.cs:199-227
+   PROBLEM: DrawnHeight is only advanced by `map.UpdateDrawnHeights`, which only RoomScanner.Rebuild calls. Edit-mode tests never call it. With a default of 0, Raycast returns the table at y=0. So the plan's claim that all other tests keep their assertions is false.
+   EVIDENCE: Tests/Editor/RoomSurfaceMapTests.cs:211-224 (Raycast_HitsTheNearestShownSurface_AtItsHeight expects 0.75), Tests/Editor/RoomScanSimulationTests.cs:125-131 (Raycast_OnTheDesk_ReturnsTheRealDeskHeight expects 0.75). Neither calls RoomScanner.
+   FIX: Define `DrawnHeight => heightLock.HasValue ? heightLock.Value : Height` (same for FloorModel.DrawnHeight), or seed the lock in Integrate. Keep HeightLock as a field, not an auto-property: it is a mutable struct, so Update() on a property copy is lost.
+
+4. [major] P1 RoomSurfaceMap.AddPrior(height, polygon, float area = 0f) + SurfaceLevel.PlaneHeight (area-weighted median) + FloorModel S = A_d + 0.5*A_p
+   PROBLEM: Every existing test call site passes no area. PlaneArea is then 0 and the area-weighted median of plane heights has zero weights, so it is undefined. In RoomScanSimulationTests the duplicate floor (0.12) merges into the floor. If the merged PlaneHeight comes out as 0.12, then once the floor IsFloor the clamp window [0.10, 0.15] has no depth mass, branch 3 sets Height = 0.12, and DuplicateFloors_BecomeOneFloor fails. The plan also never says how Absorb merges plane-height samples.
+   EVIDENCE: RoomSurfaceMapTests.cs:61,73,74,129,145,172,173,214,215,230,250,263 and RoomScanSimulationTests.cs:44-46 all call the 2-arg AddPrior. ArcorePlanePriors.cs:29 is the only runtime caller. SurfaceLevel.cs:195-212 Absorb.
+   FIX: Drop the parameter. Compute the plane area inside AddPrior from the rasterised cell count × CellSize² (more exact than plane.size.x*size.y, which is the bounding rectangle). Specify that Absorb concatenates the plane-height samples and recomputes ConfirmedArea.
+
+5. [major] P1 IsReflection pseudocode ('for each level U ... solid = U.logOdds(cell) >= 0.4 ...') and the new test Integrate_ConfirmedPrior_IsHiddenAfterTwoSeeThroughFrames
+   PROBLEM: The mirror constraint is applied to every level, not only the floor. Once a desk or seat cell is confirmed (logOdds ≥ 0.4), any ray through it that ends lower is treated as a reflection. That ray is never a miss, and it adds a weak HIT to the raised cell. Confirmed hull or edge cells can then never be carved, and they grow themselves. This contradicts the plan's own new test. The test's arithmetic is also wrong: logOdds 0.4 + prior 0.25 − 2×0.15 = 0.35 > 0.30 is still shown, and the hysteresis keeps it until logOdds ≤ 0, which takes 3 misses.
+   EVIDENCE: Plan P1 IsReflection and the 'Tests that change in P1' row; SurfaceEvidence.cs:33 (MissWeight 0.15), :39 (OccupiedThreshold 0.3); carving is the only mechanism that removes hull overreach (RoomSurfaceMap.cs:374-383; RoomScanSimulationTests.cs:92-110).
+   FIX: Restrict the mirror test to the floor level (IsFloor with State ≥ Candidate). Keep normal miss carving for raised levels. Rewrite the new test to expect hiding after 3 see-through frames.
+
+6. [major] P3 'PlaneGrouping.StencilBitCount = 7 ... PlaneGroupingTests use the constant and stay valid'
+   PROBLEM: Compute_MoreSurfacesThanStencilBits_SmallestGetNoBit hard-codes 0xFF. With 7 bits usedBits = 0x7F, so the test fails.
+   EVIDENCE: Tests/Editor/PlaneGroupingTests.cs:109 `Assert.AreEqual(0xFF, usedBits);`; Runtime/Placement/PlaneGrouping.cs:22.
+   FIX: Change the assertion to `(1 << PlaneGrouping.StencilBitCount) - 1` in the same commit. Alternatively drop the change: Mark/Unmark/Write always clear bit 128 before queue 1980, so ARCore planes at 1990 never see it set.
+
+7. [major] P1 DepthScanSource.Capture in RenderPipelineManager.beginCameraRendering ('if !TryAcquireRaw: readsWithoutDepth++') vs DepthScanSource.cs:36,96-97
+   PROBLEM: ReadsWithoutDepth = 40 was sized for reads that RoomScanner gates at 8 Hz, only while tracking and turning slowly. Counted per render callback (about 60 Hz, no gating), IsAvailable goes false after about 0.7 s of normal ARCore depth start-up. SwitchToSparseIfNeeded then permanently falls back to tracking points.
+   EVIDENCE: DepthScanSource.cs:35-36 comment '(made only while tracking and holding steady)', :97; RoomScanner.cs:277-289 (gating), :385-397 (switch).
+   FIX: Count reads without depth only in TryReadFrame (the gated path), or use tracked time (for example 5 s of SessionTracking without any depth image).
+
+8. [major] P0/P1 RoomScanner.Diagnostics, 'On MappingChanged: map.Clear()' vs Runtime/Scanning/IScanFrameSource.cs
+   PROBLEM: RoomScanner only holds `IScanFrameSource`, which exposes IsPrecise, IsAvailable, Begin, End and TryReadFrame. The mapping state, depth lag and MappingChanged event have no path to RoomScanner. Adding them to the interface breaks the test fake, which implements the interface.
+   EVIDENCE: IScanFrameSource.cs:4-18; RoomScanner.cs:56-58; Tests/Runtime/RoomScannerPlayModeTests.cs:151-182 (FloorSource : IScanFrameSource).
+   FIX: Add a separate optional interface (for example `IScanSourceDiagnostics { MappingState Mapping; float DepthLagMs; event Action MappingChanged; }`) and query it with `source as IScanSourceDiagnostics`.
+
+9. [major] P2 InteractionController.TryPlace 'bind the placed object to the hit level', ObjectManipulator.MoveTo 're-binds'
+   PROBLEM: There is no way to get the level id. Placement and dragging go through IPlacementSurface.TryGetPose(Vector2, out Pose), and RoomSurfaceMap.Raycast only returns a Pose. MoveTo(Vector3) only receives a position.
+   EVIDENCE: Runtime/Interaction/InteractionController.cs:156-158 (ContinueGesture) and :270-276 (TryPlace); Runtime/Placement/ARPlacementSurface.cs:29-50; RoomSurfaceMap.cs:199; ObjectManipulator.cs:40-43.
+   FIX: Add `RoomSurfaceMap.Raycast(Ray, float, out Pose, out int levelId)` and `RoomScanner.TryGetHit(Vector2, out Pose, out int levelId)`. In InteractionController, query manager.RoomScanner directly when HasModel, then call BindToSurface. Give MoveTo an overload that takes the level id.
+
+10. [major] P3 'Whole-floor steady mesh only when floor.State == Trusted' + 'levels without a steady mesh hold no slot' vs the play-mode test
+   PROBLEM: WaitForModel returns at the first HasModel. At that point the floor is at most Candidate, because Trusted needs 16 stable frames and ConfirmedArea ≥ 0.5. The plan defines no steady mesh for a Candidate floor, so the floor holds no slot, there is no 'Depth Mark' renderer, and ScannedFloor_GetsADepthCorrection… fails. The plan only lists queue and mesh-bounds edits for that test.
+   EVIDENCE: Tests/Runtime/RoomScannerPlayModeTests.cs:101-126 and 141-148.
+   FIX: Give a Candidate floor the same steady mesh as raised levels (confirmed cells dilated by one cell), and switch to the whole-floor mesh when Trusted. Or change the test to wait until the map's floor is Trusted.
+
+11. [major] P1 SurfaceLevel changes vs RoomSurfaceMap.MergeCloseLevels (RoomSurfaceMap.cs:315-334) and FloorModel.LevelId
+   PROBLEM: The merge keeps the level with the larger SampleCount, but the plan removes the height bins that feed it without defining a new keep rule. FloorModel tracks LevelId. If a merge drops the floor's Id, trust resets to Candidate (stableFrames = 0), and RoomSurfaceView.Keep destroys that level's view, depth slot and whole-floor steady mesh (flicker).
+   EVIDENCE: RoomSurfaceMap.cs:326 `var keep = levels[i].SampleCount >= levels[j].SampleCount ? i : j;`; SurfaceLevel.cs:48-50; RoomSurfaceView.cs:53-69.
+   FIX: Define the keep rule explicitly: the floor always survives, otherwise the larger ConfirmedArea. FloorModel follows the survivor's Id, and Absorb carries over PlaneHeight samples, ConfirmedArea, Through/SeenCount and the HeightLock.
+
+12. [major] P4 ObstacleMap.CopyTo(ObstacleGrid), ObstacleClusterer.Cluster(ObstacleGrid, …), RoomSurfaceMap.Raycast 'refuse when the ray enters a volume'
+   PROBLEM: `ObstacleGrid` is used but not defined in any Create table. The obstacle volumes are produced and stored in RoomScanner, but Raycast lives in RoomSurfaceMap, which only owns the cell ObstacleMap. ObstacleVolume.Pose is in world space while P2 moves Raycast into map space, so the world-space boxes go stale when the anchor moves.
+   EVIDENCE: Plan P4 Create/Modify tables; RoomSurfaceMap.cs:199-227; plan P2 'TryGetPose: ray into map space'.
+   FIX: Add ObstacleGrid.cs (a dense copy like SurfaceGrid). Store the volumes in map space inside RoomSurfaceMap (or pass them to Raycast). Expose world poses only through MapToWorld at the RoomScanner API.
+
+13. [major] P5 'PolygonRaster.FillRows(loops) -> grid shown flags -> level.StoreShown' vs RoomScanner.DrawLevel
+   PROBLEM: StoreShown runs before builder.Build, so the polygon mask would never reach the raycasts, and the P5 RoomScanner changes do not mention reordering. Snapped polygons and fitted rectangles (up to 0.10 m vertex moves, 15% area) can also cover Carved or P4 Blocked cells, which would make them placeable again. The tests' ShowAll helper skips the builder, so the simulation tests check a different mask than the phone uses.
+   EVIDENCE: RoomScanner.cs:347-351 (filter.Apply → StoreShown → Build); RoomSurfaceMapTests.cs:284-296 (ShowAll without builder).
+   FIX: In DrawLevel, call Build before StoreShown. AND the rasterised mask with `!blocked && state != Carved`. Put filter + build + store in one helper that both RoomScanner and ShowAll use.
+
+14. [minor] P0 BuildRunner.GetBlockingProblem calls EnsureRoomScanAssets(GetOrCreateTheme())
+   PROBLEM: GetBlockingProblem runs on every Build tab refresh. GetOrCreateTheme creates assets and calls SetDirty and AssetDatabase.SaveAssets, so every UI redraw would write assets as a side effect.
+   EVIDENCE: Editor/Tabs/BuildTab.cs:82; Editor/Services/ToolkitAssets.cs:59-88 and 95-108.
+   FIX: Make GetBlockingProblem read-only (load the theme and check HasRoomScanAssets). Do the repair in BuildRunner.Build and ToolkitPreBuild.
+
+15. [minor] P3 'UseSurfaceShader resets the three bias values on existing materials'
+   PROBLEM: UseSurfaceShader returns early when the shader and queue already match, so already-upgraded plane materials would never get the new bias values. It is also used for the highlight (ring) material, which would then get the plane bias.
+   EVIDENCE: Editor/Services/ToolkitAssets.cs:324-327 (early return), :81 (HighlightMaterial), :190, :284.
+   FIX: Add a separate `EnsurePlaneDepthBias(Material)` that GetOrCreatePlanePrefab calls for the plane fill and edge only, after UseSurfaceShader.
+
+16. [minor] P3 SurfaceDepthMaterials constructor (Material source, int firstQueue, int slots)
+   PROBLEM: SurfaceDepthMaterialsTests builds it with one argument, and the P3 test-change table does not list those call sites, so they stop compiling.
+   EVIDENCE: Tests/Editor/SurfaceDepthMaterialsTests.cs:18 and :45 (`new SurfaceDepthMaterials(source)` / `(null)`); :31 uses RenderOrder.SurfaceDepthSlots.
+   FIX: Keep a `(Material)` overload that defaults to RenderOrder.SurfaceDepth and SurfaceDepthSlots, or list these edits. Size the internal arrays from the `slots` argument, not the constant (SurfaceDepthMaterials.cs:32-34).
+
+17. [minor] P3 RoomSurfaceView.AssignDepthSlots after each rebuild
+   PROBLEM: LevelView takes its slot once (`readonly int depthSlot`) and creates the Depth parts with fixed materials in its constructor. Part has no way to change its material, so slots cannot be reassigned.
+   EVIDENCE: Runtime/Scanning/RoomSurfaceView.cs:120 and 133-139; Part at 167-191.
+   FIX: Make the slot mutable. Add Part.SetMaterial and a LevelView.SetDepthSlot that releases the old slot and takes the new one.
+
+18. [minor] P3 RenderOrder.SurfaceDepth 1960 → 1952; ARToolkitSurfaceDepth.mat created in P0
+   PROBLEM: The material asset saved in P0 stores queue 1960. GetOrCreateShaderMaterial only fixes the queue when Setup runs, so ToolkitMaterials_UseTheirRenderOrder fails until someone re-runs Setup.
+   EVIDENCE: Editor/Services/ToolkitAssets.cs:128-132; Tests/Editor/RealWorldOcclusionTests.cs:106-113.
+   FIX: Re-run Setup in P3 and commit the updated .mat. ToolkitPreBuild already calls GetOrCreateTheme, which repairs it.
+
+19. [minor] P1 FloorModel.Update 'cameraTop = max(cameraTop * 0.999, cameraY)'
+   PROBLEM: Multiplicative decay on a signed world Y. With CameraYOffset = 0 (P0), Y is about 0 at session start, so the decay does nothing. When the user crouches, Y is negative and ×0.999 moves cameraTop up toward 0. The same happens in map space in P2.
+   EVIDENCE: Plan P0 CameraYOffset = 0; XROrigin applies the offset only in Device mode (core-utils XROrigin.cs:176-184).
+   FIX: Use additive decay: `cameraTop = max(cameraTop - 0.05f*dt, cameraY)`.
+
+20. [minor] P1 RefineHeights 'for each point p (upFacing, …)'
+   PROBLEM: Tracking-point frames have HasNormals = false and every point has facesUp = false. Taken literally, the sparse source would never refine heights. The current code only filters by facing when HasNormals is true.
+   EVIDENCE: Runtime/Scanning/FeaturePointScanSource.cs:69 and 88; RoomSurfaceMap.cs:234 `if (frame.HasNormals && !frame.IsUpFacing(i))`.
+   FIX: Use `(!frame.HasNormals || frame.IsUpFacing(i))` in RefineHeights and in the obstacle floor-miss rule.
+
+21. [minor] P7 MappingNeverVerified_FallsBackToTrackingPoints
+   PROBLEM: The test cannot be written with the existing hook. ConfigureForTests assigns the same object to preciseSource and sparseSource, and SwitchToSparseIfNeeded returns early when they are the same.
+   EVIDENCE: Runtime/Scanning/RoomScanner.cs:91-102 and 385-389.
+   FIX: Add `ConfigureForTests(camera, precise, sparse, …)` with two sources.
+
+22. [minor] P4 RoomScanProgress.ObstacleCount
+   PROBLEM: Adding a required constructor parameter breaks every caller of the 5-argument constructor.
+   EVIDENCE: Runtime/Scanning/RoomScanProgress.cs:8; Tests/Editor/RoomScanTextTests.cs:19, 27, 41; RoomScanner.cs:340.
+   FIX: Add it as an optional last parameter (`int obstacleCount = 0`).
+
+23. [minor] P6 'CheckedArea from a per-chunk checked bit' on SurfaceChunk
+   PROBLEM: CheckedArea is floor area checked at any height (one set of xz cells). Per-level chunk bits count the same cell once per level and lose checked area when levels merge or ghost levels are removed.
+   EVIDENCE: RoomSurfaceMap.cs:55, 64-65, 409.
+   FIX: Keep a separate level-independent chunked bitset of checked xz cells in RoomSurfaceMap.
+
+24. [minor] P6 DepthUnprojectJob 'scheduled in the capture callback, completed in the next Update' on persistent DepthSnapshot arrays
+   PROBLEM: RoomScanner only reads frames every IntegrateInterval (0.125 s). If completion is tied to TryReadFrame, the next render-time capture writes into NativeArrays a running job still reads, and the job safety system throws.
+   EVIDENCE: RoomScanner.cs:20 and 144-147.
+   FIX: Complete any pending job at the start of Capture, or double-buffer the snapshot.
+
+25. [minor] P2 CreatePlacementParent returns roomScanner.CreateContentHolder(pose) 'no separate anchor'
+   PROBLEM: Deleting a placed object only destroys `anchorHolder`. If the holder is returned with anchorHolder = null, every deleted object leaves an empty holder GameObject behind.
+   EVIDENCE: Runtime/Core/ARToolkitManager.cs:299-317; Runtime/Interaction/ToolkitObject.cs:40-43 and 73-75; InteractionController.cs:276-282.
+   FIX: Return the content holder's GameObject through `out anchorHolder` so it is destroyed with the object.
+
+26. [minor] P0 SceneUpgrader.Apply 'assign theme if null'
+   PROBLEM: ARToolkitManager.theme is a private [SerializeField]. The only setter is the 11-argument internal Initialize.
+   EVIDENCE: Runtime/Core/ARToolkitManager.cs:20 and 385-400 (only SetConfig and SetDesktopParts exist).
+   FIX: Assign it through a SerializedObject on 'theme', or add `internal void SetTheme(ToolkitTheme)`.
+
+27. [minor] P6 new DepthUnprojectJobTests / ERASMUS_HAS_BURST
+   PROBLEM: The edit-mode test assembly does not reference Unity.Mathematics, Unity.Collections or Unity.Burst, and it does not have the ERASMUS_HAS_BURST version define, so job tests will not compile or will be silently excluded.
+   EVIDENCE: Tests/Editor/Erasmus.ARToolkit.Tests.Editor.asmdef references and versionDefines.
+   FIX: Add those references and the same versionDefine to the edit-mode and play-mode test asmdefs.
+
+28. [minor] P4 ObstacleClusterer(… roomYaw …) vs P5 RoomAxes
+   PROBLEM: P4 depends on the room yaw, which only exists once RoomAxes arrives in P5.
+   EVIDENCE: Plan P4 Cluster pseudocode 'rectYaw = bounding box in the room-yaw frame'; RoomAxes is in the P5 Create table.
+   FIX: In P4, pass 0 (or the map yaw) and switch to RoomAxes.Yaw in P5. Also add a floor/raised flag to SurfaceMeshBuilder.Build for the P5 floor-vs-raised pipeline (the current signature at SurfaceMeshBuilder.cs:88 has none).
+
+29. [minor] P1 constants table 'LevelMergeDistance 0.08 … larger than the max hit tolerance, so a point never fits two levels'
+   PROBLEM: The stated reason is wrong. Two levels 0.08 apart, each with a tolerance of up to 0.06, both accept a point midway (0.04 from each). The nearest-level rule is what actually prevents double hits.
+   EVIDENCE: Plan P1 'Hit tolerance clamp(2σ, 0.03, 0.06)'.
+   FIX: Fix the stated reason. If exclusivity is ever needed, use ≥ 2 × max tolerance (0.12).
+
+MISSING:
+ - Weak-vote representation: the Vote struct (RoomSurfaceMap.cs:436-442) aggregates Hits/Misses and applies `Hits >= Misses` with one weight. The plan never says how a ReflectionHitWeight = 0.1 vote is stored, or how it survives the P6 byte FrameHits/FrameMisses. Those byte counters also need saturating adds (a 5 cm cell at 0.5 m can exceed 255 pixels at 320x240).
+ - SurfaceLevel.PriorWeight update when PriorsNeedConfirmation flips mid-scan (SwitchToSparseIfNeeded, RoomScanner.cs:385-397). SurfaceGrid.SetCell and ScoreAt (SurfaceGrid.cs:57-67) and SurfaceLevel.GetState (SurfaceLevel.cs:58-63) must all use the level's weight.
+ - HeightHistogram origin and range: 512 bins cover 5.12 m, but the plan does not say whether this is world space (P1, floor near -1.3 m after CameraYOffset 0) or map space (P2), or that map and histogram must be cleared when P2 switches frames.
+ - RoomScanText.ScanMoved (P2) and the heights-only integrate mode used by ReverifyAfterTrackingLoss are not in any Modify table. Re-verifying after FinishScan also needs the source restarted (StopScanning sets source = null, RoomScanner.cs:254-270).
+ - ResetScan while scanning: map.Clear() resets FramesIntegrated to 0, so under the new rule the ARCore planes must be un-suppressed again (RoomScanner.cs:218-237).
+ - Test hooks: the play-mode fixture has no ARPlaneManager, ARPlaneSurfaces or ARAnchorManager (RoomScannerPlayModeTests.cs:24-38). ArcorePlanes_StayVisibleUntilTheFirstDepthFrame and RootFollowsTheMapFrame have nothing to observe without an injectable suppress callback or map frame.
+ - RoomSurfaceView must own and destroy its per-level fill and outline material copies. ARPlaneSurfaces' new bit-0 clone must be destroyed in OnDestroy (ARPlaneSurfaces.cs:66-70 only destroys the per-bit caches).
+ - DepthPixels (DepthPixels.cs:75-94) only thresholds confidence and never returns the value. ScanFrame.Add(point, facesUp, confidence) needs a ConfidenceAt accessor on DepthPixels or DepthSnapshot, and the plan should say whether DepthPixels is kept or replaced.
+ - The occluder in P3 needs a second marching-squares pass over the confirmed-cell mask. AddOccluder currently reuses the fill vertices (SurfaceMeshBuilder.cs:346-357), so Build needs a separate mask and field buffer.
+ - ObjectManipulator.ResetPose restores initialLocalPosition (ObjectManipulator.cs:62-67), which undoes the P2 surface binding and LevelHeightChanged adjustments unless it is made binding-aware.
+ - EditorUtility, BuildPlayerOptions and PreBuild ordering: ToolkitPreBuild at -200 runs before ReferenceLibraryPreBuild at -100 (ReferenceLibraryBuilder.cs:124-127). This works, but GetOrCreatePlanePrefab calls PrefabUtility.SaveAsPrefabAsset during a build, which is new and should be tested with the batch build (BatchCommands.cs:74).
+
+=========== critic:tests-migration-completeness verdict=sound-with-fixes issues=27 ===========
+
+1. [major] P0 ARToolkitManager.EnsureOriginSettings (Awake): `GetComponent<XROrigin>().CameraYOffset = 0f`
+   PROBLEM: ARToolkitManager lives on the scene root, and XROrigin lives on the child 'XR Origin (Mobile AR)'. GetComponent<XROrigin>() on the manager therefore returns null, and Awake throws a NullReferenceException in every toolkit scene, Desktop mode included. The rest of Awake (Registry, EnsurePlaneSurfaces, RealWorldOcclusion, EnsureRoomScanner) never runs. Every DemoScenePlayModeTests case (Desktop) would fail.
+   EVIDENCE: SceneBuilder.cs:77 (CreateXROrigin child), :105 (root.AddComponent<ARToolkitManager>), :143 (XROrigin on child); ARToolkitManager.cs:108-132, 171-173 (the existing pattern uses arOriginObject.GetComponent<XROrigin>())
+   FIX: Use `var xr = arOriginObject != null ? arOriginObject.GetComponent<XROrigin>() : null; if (xr != null) xr.CameraYOffset = 0f;` and call it in Awake before the origin is activated. Add an edit/play test that runs Awake on a SceneBuilder-made rig in Desktop mode.
+
+2. [major] P0 ARToolkitManager: 'Log an error once when theme == null || !theme.HasRoomScanAssets'; P4 extends HasRoomScanAssets with obstacle shader/materials
+   PROBLEM: The error is logged in the Editor and in Desktop mode as well. Unity Test Framework fails any test that logs an unexpected error. The demo scene references Settings/ARToolkitTheme.asset, which today has no surfaceDepthMaterial. Once P4 adds the obstacle assets, it lacks those too until someone re-runs Setup and commits the theme. Every DemoScenePlayModeTests case then fails in UnitySetUp. Windows (Desktop) builds would also log an error.
+   EVIDENCE: Settings/ARToolkitTheme.asset:15-19 (no surfaceDepthMaterial); verified.txt:343; DemoScenePlayModeTests.cs:24-45 loads ARToolkitDemo which references the theme
+   FIX: Log the error only when `!Application.isEditor && Mode == AR`, and use LogWarning in the Editor. In every phase that adds a theme asset (P0 shaders, P4 obstacle materials), commit the regenerated theme, .mat files and prefab in the same commit. Add RealWorldOcclusionTests TestCases for ARToolkitObstacle / ARToolkitObstacleEdge (queues 1992/1993).
+
+3. [major] P0 BuildRunner.GetBlockingProblem calls ToolkitAssets.EnsureRoomScanAssets(GetOrCreateTheme()); ToolkitPreBuild calls GetOrCreateTheme + GetOrCreatePlanePrefab
+   PROBLEM: GetBlockingProblem is a status query. BuildTab.Refresh calls it on every tab refresh and every platform/output-field change, so asset creation, SetDirty and AssetDatabase.SaveAssets would run from UI repaints. The check also runs for Windows builds, which never use the room scan. Inside IPreprocessBuildWithReport, GetOrCreatePlanePrefab can LoadPrefabContents/SaveAsPrefabAsset and write and import a PNG (EnsurePlaneGrid) while the build is running.
+   EVIDENCE: BuildTab.cs:61-87 (Refresh -> GetBlockingProblem); ToolkitAssets.cs:59-88, 95-108, 186-241, 340-377 (SaveAssets, SaveAsPrefabAsset, ImportAsset)
+   FIX: Keep GetBlockingProblem read-only: load the theme with AssetDatabase.LoadAssetAtPath, check HasRoomScanAssets, and only for BuildPlatform.Android. Run asset creation in BuildRunner.Build before BuildPipeline.BuildPlayer, and in Setup. Make ToolkitPreBuild validate-only and Android-only (report.summary.platform), failing with 'Run Setup'.
+
+4. [major] P3/P4/P1 'Tests that change' tables: the plan claims 'No other test changes'
+   PROBLEM: Several existing tests break at compile time or fail, and the plan does not list them. (a) SurfaceDepthMaterialsTests.SetUp and Acquire_WithoutMaterial_GivesNoSlot use the 1-arg constructor, which P3 replaces with (Material,int,int). (b) StatusMessageResolverTests.AR_Scanning_ExplainsTheRoomScan_OnceTracking asserts MovePhone while scanning without tracking. The new TrackingLostWhileScanning message is either unreachable (ResolveAR checks !IsTracking first) or breaks this test. (c) RoomScanTextTests builds RoomScanProgress with 5 arguments, but P4 adds ObstacleCount. (d) EnsureLevel_HeightsWithinTenCentimeters_ShareOneLevel keeps passing, but its name becomes wrong with LevelMergeDistance 0.08.
+   EVIDENCE: SurfaceDepthMaterialsTests.cs:18,45; StatusMessageResolverTests.cs:71-76; StatusMessageResolver.cs:66-75; RoomScanTextTests.cs:19,27,41; RoomSurfaceMapTests.cs:47-55
+   FIX: Keep `SurfaceDepthMaterials(Material) : this(m, RenderOrder.SurfaceDepth, RenderOrder.SurfaceDepthSlots)`. Make obstacleCount an optional ctor parameter. Change ResolveAR to `if (!IsTracking) return IsScanning ? TrackingLostWhileScanning : MovePhone`, and list the StatusMessageResolverTests edit in P2. Rename the EnsureLevel test.
+
+5. [major] P7 play-mode tests (MappingNeverVerified_FallsBackToTrackingPoints, ArcorePlanes_StayVisibleUntilTheFirstDepthFrame, HidePlanes_KeepsDepthPartsAndHidesObstacles, RootFollowsTheMapFrame, ResetScan_KeepsPlacedObjects)
+   PROBLEM: The existing seam cannot run these tests. ConfigureForTests assigns one object to both preciseSource and sparseSource, and SwitchToSparseIfNeeded returns early when sparseSource == preciseSource, so the fallback can never happen. The test RoomScanner has no ARPlaneManager/ARPlaneSurfaces, and ARPlaneSurfaces.suppressed is private, so 'planes stay visible' cannot be observed. FloorSource only returns a flat floor and ConfigureForTests takes no obstacle material, so no obstacles exist to hide. MapFrame is the identity without an ARAnchorManager, so 'root follows the frame' cannot move. ResetScan_KeepsPlacedObjects has no manager or registry to place anything.
+   EVIDENCE: RoomScanner.cs:91-102, 385-397, 107, 488-494; ARPlaneSurfaces.cs:41-43 (private suppressed); RoomScannerPlayModeTests.cs:151-182
+   FIX: Extend ConfigureForTests with separate precise and sparse sources plus obstacleFill/obstacleEdge materials. Add an injectable suppression callback, or `internal bool IsSuppressed` on ARPlaneSurfaces. Give MapFrame a pose-provider seam, e.g. `internal void UseTransformForTests(Transform)`, that tests can move. Add a SimulatedRoomSource that reuses RoomScanSimulationTests.Capture (desk, chair, noise, glossy) so RoomScanner is tested end to end.
+
+6. [major] P1/P4/P5 vs RoomScanSimulationTests harness (RoomSurfaceMapTests.ShowAll)
+   PROBLEM: Most of the new visible behaviour sits in RoomScanner.Rebuild/DrawLevel: hysteresis (wasShown), injecting dilated blocked cells before filter.Apply, floor vs raised filter settings, the P5 polygon raster that rewrites shown flags ('what is drawn is what is hit'), UpdateDrawnHeights and obstacle clustering. The simulation tests only call map.Integrate plus ShowAll, which runs only filter.Apply(grid) with the default (Raised) settings. ThinLegChair ('floor under the seat not shown'), GlossyFloor ShownArea and DeskArea would therefore check a different cell set than the phone draws. P5 also writes shown flags inside Build, while the current order calls StoreShown before Build.
+   EVIDENCE: RoomSurfaceMapTests.cs:284-296; RoomScanner.cs:306-360 (filter.Apply -> StoreShown -> builder.Build)
+   FIX: Move the per-level rebuild into a pure class (e.g. RoomModelBuilder.Rebuild(map, dt, settings)): floor/raised filters, blocked cells, polygons, then StoreShown after the polygon raster, drawn heights, obstacle clustering. Call it from both RoomScanner and ShowAll, and write the P7 simulation tests against its output.
+
+7. [major] P1 IsReflection pseudo-code ('for each level U with p.y < U.Height − band ... solid = U.logOdds(cell) >= 0.4')
+   PROBLEM: The agreed mirror constraint applied only to occupied or prior FLOOR cells. The plan applies it to every level. Any floor or chair point seen through a confirmed desk or seat cell is then classed as a reflection: it never carves and adds a weak hit to that cell. Examples: pose lag at a desk edge, a chair that has been moved away, a hull cell that got two hits from a backrest top near 0.75 m. Confirmed raised cells therefore become permanent. This breaks the 'people walking through: free-space carving' mitigation and leaves S4 in place.
+   EVIDENCE: Plan P1 IsReflection/CollectVotes; current carving path RoomSurfaceMap.cs:374-383; agreed direction P1 text
+   FIX: Treat a point as a reflection only when p.y < F − band(d) and the ray crosses a solid floor cell. For raised levels keep the normal miss votes. Add tests Integrate_ConfirmedSeatSeenThroughAfterChairMoved_IsCarved and Integrate_FloorSeenPastConfirmedDeskEdge_CarvesTheOverhang.
+
+8. [major] P1 PriorWeight precise 0.25 (priors need depth confirmation) vs S3 on glossy tiles
+   PROBLEM: Today an ARCore floor-hull cell is shown from its prior alone (0.5 > 0.3). With 0.25, a cell needs an up-facing hit with confidence >= 128 at 0.4-3.5 m. On the user's glossy tiles, where ARCore confidence is low, this creates more floor holes than today, so S3 can get worse. The mitigations (weak reflection hits, morphology, dense sampling) are not tested for this case. GlossyFloor's 'ShownArea loss < 2%' has no stated baseline.
+   EVIDENCE: SurfaceEvidence.cs:34,39; research.txt:79 (low confidence on shiny tiles)
+   FIX: Use a per-level prior weight: 0.5 for the floor level once it is Trusted (except blocked or carved cells), and 0.25 for raised levels and before trust. Add a simulation test with 30-50% of floor pixels below confidence 128 that asserts floor coverage >= 90% of the hull, one component and no holes.
+
+9. [major] P1 FloorModel trust rule and DeskPlaneFirst_DoesNotBecomeTheFloor test
+   PROBLEM: NoteBesideBelow is only called inside `if floor.State == Trusted && floor.IsBelow(...)`, yet trust requires besideBelowRatio < 0.2. While Candidate the ratio is always 0, so this guard never stops a desk. The planned test uses the simulation cameras at 1.4-1.5 m, so the `cameraTop − h >= 0.8` rule rejects a 0.75 m desk by itself. A teacher holding the phone at 1.7 m (0.95 m above the desk), with the floor seen late, is not tested. Also, `cameraTop = max(cameraTop*0.999, cameraY)` misbehaves for negative or near-zero world Y, which becomes normal after CameraYOffset = 0 in world space before P2.
+   EVIDENCE: Plan P1 FloorModel.Update / CollectVotes; RoomScanSimulationTests.cs:25-36 (camera heights 1.4-1.5)
+   FIX: Count below-candidate evidence while the floor is Candidate. Replace the multiplicative decay with `cameraTop = max(cameraTop − 0.05*dt, cameraY)`. Add a DeskPlaneFirst variant with a 1.7 m camera and floor frames arriving after 20 desk frames.
+
+10. [major] P1 RefineHeights ('for each point p (upFacing, conf >= 160, 0.5 <= d <= 3.0)')
+   PROBLEM: Tracking-point frames have HasNormals = false, so IsUpFacing is false. Today they still feed heights (`if (frame.HasNormals && !frame.IsUpFacing(i)) continue;`). Under the plan, phones without depth never refine heights and never latch IsConfirmed, so misses always need the extra 0.15 m margin. Depth = Optional (P0) will increase the number of such installs. No test covers the sparse path.
+   EVIDENCE: RoomSurfaceMap.cs:232-238; FeaturePointScanSource (HasNormals false); RoomScanner.cs:384-397
+   FIX: Use `(!frame.HasNormals || upFacing)` with a sparse weight. Add sparse variants (Reset(origin,false)) of DuplicateFloors_BecomeOneFloor and DeskHeight_IsCorrected.
+
+11. [major] P1 height fusion branch order + global Decay(0.97)
+   PROBLEM: When a level's depth mass decays below FusionMass because it is out of view for about 4 s, the branch `else if L.PlaneHeight has value: L.Height = L.PlaneHeight` resets it to the ARCore plane height (3 cm off in the simulation: 0.78 vs 0.75). The lock then slews it visibly, a new drift source for S1. DeskHeight_IsCorrected only checks the end state, where the desk may still have mass.
+   EVIDENCE: Plan P1 RefineHeights; RoomScanSimulationTests.cs:46,79-82
+   FIX: Decay only the bins that received samples this frame (or the per-level window in view), and keep the last depth-derived height when mass drops. Add a test: desk corrected, then 30 frames looking only at the floor, desk still 0.75 ± 0.01.
+
+12. [major] P2 ToolkitObject.BindToSurface(levelId) / LevelHeightChanged(int,float) / CreateContentHolder
+   PROBLEM: Level ids do not stay valid. MergeCloseLevels removes levels, the P1 ghost removal and 'remove levels below F−0.06' delete levels, ResetScan clears all of them, and RoomSurfaceView.Keep drops their views. Bound objects then point at dead ids and stop following heights. No test covers this. Separately, CreateContentHolder returns a Transform and anchorHolder stays null, so ToolkitObject.OnDestroy never destroys the holder and deleted objects leak empty GameObjects.
+   EVIDENCE: RoomSurfaceMap.cs:315-334; RoomSurfaceView.cs:53-70; ToolkitObject.cs:40-43,72-75; InteractionController.cs:276-282
+   FIX: Raise LevelMerged(from,to) and LevelRemoved and rebind objects. On ResetScan unbind, and re-adopt at FinishScan. Return the holder GameObject as anchorHolder. Add the test PlacedObject_StaysBoundWhenItsLevelMerges.
+
+13. [major] P3 ContactDepthView owned by ARToolkitManager ('objects not covered by scan steadying')
+   PROBLEM: In Desktop mode there is never a scan, so every placed object would get contact Mark/Write depth quads at queues 1940-1951. The webcam background is a far-plane quad drawn with the opaque image-target material at CameraImage 1980, after those queues. It fails the depth test under each object, so camera-view mode shows clear-colour patches around object bases. This is a Desktop regression.
+   EVIDENCE: RenderOrder.cs (CameraImage 1980); WebcamBackground.cs:95-100, 242-249; ToolkitAssets.cs:85 (image target material at CameraImage)
+   FIX: Create and refresh ContactDepthView only when Mode == AR and the AROcclusionManager is enabled and supported. Add a Desktop play-mode assertion that no 'Contact Depth' renderer exists.
+
+14. [minor] P3 test change for RoomScannerPlayModeTests.ScannedFloor_GetsADepthCorrection ('mark mesh bounds contain fill bounds'); 'Whole-floor steady mesh only when floor.State == Trusted'
+   PROBLEM: WaitForModel returns at the first HasModel, about 4 integrated frames in (IntegrateInterval 0.125 s, RebuildInterval 0.5 s). Trust needs 16 frames. The plan does not say what the untrusted floor steadies, so the mark may be null. Bounds containment is also too weak: the bounding boxes can match while fill cells outside the confirmed+1 steady region get raw depth plus only a 0.004 grid bias, which creates new S3 holes.
+   EVIDENCE: RoomScanner.cs:20-21, 339; RoomScannerPlayModeTests.cs:101-126, 141-148
+   FIX: Define the steady region as fill cells ∪ confirmed cells dilated by one cell, ∪ the whole floor once Trusted. Test per-cell coverage (every shown cell lies under the steady mesh). In the test, wait until Diagnostics.Floor == Trusted before checking the whole-floor mesh.
+
+15. [minor] P0 ScanDiagnostics (public struct) + P1 FloorModel ('internal sealed class', enum FloorState) + public RoomSurfaceMap/SurfaceLevel
+   PROBLEM: A public struct with a public field of an internal enum is compiler error CS0052. RoomSurfaceMap and SurfaceLevel are public, so the new members typed ObstacleMap or HeightLock must not be public (CS0053). Removing or changing public consts (LevelMergeDistance, RefinedMergeDistance, HitTolerance, MissMargin) is a breaking API change in a package that is still versioned 1.x.
+   EVIDENCE: RoomSurfaceMap.cs:20-47; SurfaceLevel.cs:12-23; ToolkitPaths.cs:10 (Version 1.0.0)
+   FIX: Declare MappingState and FloorState public, or make Diagnostics internal. Keep the new members internal. Keep [Obsolete] aliases for removed public consts, or bump to 2.0.0.
+
+16. [minor] P0 ToolkitBuildChecksTests (GetOrCreateTheme_HasRoomScanAssets, PlanePrefab_ShowsOnlyTrackedPlanes)
+   PROBLEM: Calling GetOrCreateTheme or GetOrCreatePlanePrefab from an edit-mode test creates or overwrites project assets on every test run: SaveAssets, SaveAsPrefabAsset, UseSurfaceShader. The committed prefab still has m_TrackingStateVisibilityThreshold: 1, and the plan does not commit an upgraded prefab or demo scene.
+   EVIDENCE: ToolkitAssets.cs:59-88,186-241; Prefabs/ARToolkitPlane.prefab:66; Samples/Scenes/ARToolkitDemo.unity:833 (m_CameraYOffset 1.1176)
+   FIX: Make the tests read-only against committed assets (like RealWorldOcclusionTests), and test ConfigurePlaneObject on an in-memory GameObject. Commit the upgraded prefab and the regenerated demo scene (DemoSceneGenerator).
+
+17. [minor] P3 ToolkitAssets.UseSurfaceShader 'resets the three bias values on existing materials'
+   PROBLEM: UseSurfaceShader returns early when the shader and queue already match. That is the case for ARToolkitPlane.mat, ARToolkitPlaneEdge.mat and ARToolkitHighlight.mat, so the reset never runs. The plane material also serialises _DepthBias 0.05, so changing the shader default does nothing.
+   EVIDENCE: ToolkitAssets.cs:324-327; unverified.txt:267 (ARToolkitPlane.mat sets _DepthBias 0.05)
+   FIX: Apply the bias values before the early return, with a version marker so teacher overrides are not reset each time, and include the updated .mat files in the package.
+
+18. [minor] P0 ToolkitSceneProcessor : IProcessSceneWithReport
+   PROBLEM: OnProcessScene is also called for scenes loaded in Editor Play Mode, with report == null. SceneUpgrader.Apply would therefore change every play-mode scene, including the DemoScenePlayModeTests loads and teachers' non-toolkit scenes.
+   EVIDENCE: DemoScenePlayModeTests.cs:32 (LoadSceneAsync per test)
+   FIX: Add `if (report == null) return;` and only apply to scenes that contain an ARToolkitManager.
+
+19. [minor] P0 CameraYOffset = 0 listed as an S1 fix; EditPanel/TransformFormatter; HeightHistogram(origin, 512 bins)
+   PROBLEM: CameraYOffset only changes the coordinate origin and does not fix S1. Side effects: EditPanel shows world position, so an unbound object on the floor reads Y ≈ −1.4 m instead of about 0. The histogram origin is unspecified, and with floor heights of −1.4 m in world space (P1 ships before P2) a default origin of 0 would silently drop every sample.
+   EVIDENCE: EditPanel.cs:84; TransformFormatter.cs:9-16; plan P1 HeightHistogram '1 cm bins, 512 bins'
+   FIX: Remove P0 from the S1 row. Show Y relative to the floor (or the scan floor height) when known. Set the histogram origin to cameraStartY − 3 m, or use map space.
+
+20. [minor] HUD/texts: RoomScanText, StatusMessages.RoomScan, InteractionController.NoSurfaceMessage, README
+   PROBLEM: Several texts become wrong or are missing. LessPrecise ('This phone has no depth sensing') would also fire when the mapping is Unverifiable or confidence images are missing. MappingChanged reuses ScanReset ('Scan cleared. Look around again.') although the user did not reset. RoomScanText.ScanMoved does not exist. Tapping an obstacle shows 'No scanned surface there. Tap Scan Room to add more.' RoomScan does not ask for floor first or walking around furniture. The README still says the scan 'covers horizontal surfaces ..., not walls' and has no upgrade or 'Run Setup after import' note.
+   EVIDENCE: RoomScanProgress.cs (RoomScanText consts); StatusMessageResolver.cs:40-41; InteractionController.cs:295; README.md:29,169-170,190
+   FIX: Add DepthUncalibrated, MappingChanged, ScanMoved, FindingFloor (Progress while FloorState != Trusted) and ObstacleThere texts, each with a RoomScanTextTests case. Update StatusMessages.RoomScan, and the README scan, troubleshooting, limitations and upgrade sections.
+
+21. [minor] P0 scan-debug label 'shown when showScanDiagnostics || Debug.isDebugBuild'
+   PROBLEM: Debug.isDebugBuild is always true in the Editor, so the debug line would show in Desktop mode and in the DemoScenePlayModeTests screenshot.
+   EVIDENCE: ScanPanel.cs:43-49 (SetAvailable only in AR)
+   FIX: Show it only when available && IsScanning && (showScanDiagnostics || (Debug.isDebugBuild && !Application.isEditor)).
+
+22. [minor] P6 'all existing tests run against both paths (fixture parameter switches RoomSurfaceMap.UseJobs)'; DepthUnprojectJobTests
+   PROBLEM: This contradicts 'no other test changes', because every fixture would need [TestFixture(true/false)]. The Tests.Editor asmdef has overrideReferences: true and no Unity.Mathematics, Unity.Collections or Unity.Burst reference, so tests using float3 or NativeList will not compile. Burst compiles asynchronously in the Editor, so a job test may pass on the managed fallback. The capture-scheduled / Update-completed job has no synchronous path for Integrate in tests.
+   EVIDENCE: Tests/Editor/Erasmus.ARToolkit.Tests.Editor.asmdef (references list); plan P6
+   FIX: Add the package references to both test asmdefs. Use [BurstCompile(CompileSynchronously = true)] and add an internal synchronous Complete() for tests. List the fixture edits explicitly.
+
+23. [minor] P0/P2 ARSession.stateChanged subscription in ARToolkitManager
+   PROBLEM: stateChanged is a static event and the plan never unsubscribes. DemoScenePlayModeTests reload the scene for every test, which leaves handlers on destroyed managers.
+   EVIDENCE: DemoScenePlayModeTests.cs:24-45
+   FIX: Unsubscribe in OnDestroy, together with restoring Screen.sleepTimeout.
+
+24. [minor] P7 ScaleBias_FloorFollowsThePlaneWithinTwoCentimeters, DriftJump_IsAbsorbedByTheLock
+   PROBLEM: Both tests are tautological. The simulation's floor prior sits exactly at 0, so the −0.02 clamp around it guarantees floor >= −0.02. DriftJump only restates the 0.02 m/s slew constant.
+   EVIDENCE: RoomScanSimulationTests.cs:44 (AddPrior(0f,...))
+   FIX: Bias the simulated ARCore plane too (e.g. +2 cm) and assert the estimate error against ground truth. For drift, assert that the drawn floor converges within N s, that no ghost level or hole appears, and add a −10 cm relocalisation case that must demote the floor (Trusted → Candidate) and recover.
+
+25. [minor] P5 floor component rule ('largest plus >= 0.25 m²') + floor hole filling <= 0.5 m² + P4 blocked cells
+   PROBLEM: Blocked chair and desk cells split the classroom floor into aisles. Legitimate pieces smaller than 0.25 m² that are not the largest are dropped, giving more S3 islands and holes. Filling unseen floor holes up to 0.5 m² covers chair footprints whenever the seat was not detected (e.g. a chair pushed under a desk), which brings S4 back.
+   EVIDENCE: SurfaceRegionFilter.cs:18-21, 85-105
+   FIX: Keep floor components that border blocked cells. Only fill hole cells that were observed (checked) or have a prior while the floor is Trusted. Add tests for a fragmented floor and for a chair under a desk.
+
+26. [minor] P1 DepthScanSource.CheckMapping pseudo-code
+   PROBLEM: The anti-hang logic lives inside DepthScanSource, which is tied to XRCpuImage and ARRaycastManager, so no test can check that it terminates, including the flat-floor tie that motivated F7. On MappingChanged the whole map is cleared mid-scan.
+   EVIDENCE: DepthScanSource.cs:326-413
+   FIX: Extract a pure MappingSelfCheck state machine (inputs: per-attempt candidate errors). Test Verified, Assumed within 24 attempts on ties, Unverifiable with zero hits, and a recheck switch. Consider holding frames until Verified or Assumed instead of clearing the map.
+
+27. [minor] P4 RoomSurfaceMap.Raycast refusal by ObstacleVolume + ObstacleVolume.Pose 'world'
+   PROBLEM: The volumes are stored in world space while the map, rays and meshes are in map space (P2). After an anchor correction the refusal test and the boxes disagree. No test covers the refusal.
+   EVIDENCE: Plan P2 MapFrame / P4 ObstacleVolume
+   FIX: Store volumes in map space and convert with MapToWorld for the public API. Add a test Raycast_BehindAnObstacle_IsRefused.
+
+MISSING:
+ - S4 without a scan: raw ARCore desk hulls drawn by ARPlaneSurfaces are not addressed (verified.txt:39 competing explanation). Either document that S4 is fixed only after Scan Room (README, status text) or clip or hide raw hulls; add on-device checklist steps for S4 without scanning.
+ - S4 chair backrests near desk height (school chairs ~0.75-0.8 m): backrest tops give up-facing desk-level hits next to the desk, and raised levels get only Close (no Open). Needs Open (2 cells) or a thin-strip rule on raised levels, plus a simulation test with a backrest top at 0.76 m touching the desk.
+ - S1 ground-truth check that does not depend on ARCore: hold the phone at a tape-measured 1.00 m and require cameraY − FloorHeight = 1.00 ± 0.02 in diagnostics; also check the grid against a marked tile corner from 1 m and 3 m.
+ - S3 test with realistic confidence dropouts and flying pixels on the floor, asserting floor coverage, a single component and no holes after P1+P5.
+ - Upgrade verification: import the new .unitypackage into a copy of a 1.0.0 teacher project (theme without surfaceDepthMaterial, scene with CameraYOffset 1.1176, Limited plane prefab, a locally generated ARToolkitSurfaceDepth.mat with a different GUID, which import turns into 'ARToolkitSurfaceDepth 1.mat'), then build and run. State that no toolkit file is deleted or renamed (a .unitypackage import cannot delete stale files), or add 'delete Assets/ErasmusARToolkit before importing' to the README.
+ - Desktop/Windows verification in section 11: run DemoScenePlayModeTests after every phase, make a Windows build, and check camera-view (webcam) mode for depth artefacts under placed objects.
+ - On-device check on a phone without the Depth API (now installable with Depth = Optional) for the tracking-point path, plus sparse-path edit-mode tests.
+ - Obstacle tests beyond ThinLegChair: moved chair decays and frees the floor, a person walking through, a bag on the floor (kind Other), desk with chair pushed in, an L-shaped cluster becoming a prism, obstacles frozen after FinishScan.
+ - ARToolkitSurfaceDepth.mat and the new obstacle materials must be regenerated and committed after P3 (queue 1960 → 1952) and after P4, or RealWorldOcclusionTests fails until Setup is run.
+ - F9 Mobile_RPAsset MSAA off / renderScale 0.8 (which adds to the jagged S2 edge) is not addressed: add an optional ProjectConfigurator step (MSAA 4x, renderScale 1.0) or document it.
+ - Contact protection for image-target content (ToolkitObjects that are not in the Registry) standing on the floor or a desk, which is still cut by raw depth.
+ - On-device checklist #9 expects 'no grid on legs above about 6 cm', but P3 pull(d) reaches 0.10 m at 3 m or more. Align the expectation with the pull formula or cap the pull.
+ - The MappingChanged signal must not be added to the public IScanFrameSource interface (it would break the tests' FloorSource and teachers' implementations). Expose it on DepthScanSource or through a separate optional interface.
+ - The pre-build and diagnostics rows need a Setup-tab status check that is read-only (HasRoomScanAssets), so opening the window never writes assets.
+
+=========== critic:phone-performance-robustness verdict=sound-with-fixes issues=26 ===========
+
+1. [blocker] P1 IsReflection / CollectVotes (mirror rule loops over every level U), colliding with RoomSurfaceMap.cs:374-383, the only path that removes a raised cell
+   PROBLEM: The mirror test treats a point as a reflection whenever its ray crosses any depth-confirmed cell (logOdds >= 0.4) of any level above it, and then adds a weak hit to that cell. For raised levels this reverses the evidence. Take a chair that is moved away: its seat cells were at MaxLogOdds 1.6 (SurfaceEvidence.cs:36). Floor points now seen through them count as 'reflections', so the seat never carves and keeps getting +0.1 hits. The same happens to a seat pushed half under a desk, to desk-edge overreach, and to chair backrest tops (0.75-0.85 m) that fall into the desk level: all become permanent. S4 gets worse, not better, in a classroom where chairs move all lesson. The ghost test (ThroughCount/SeenCount >= 0.5) can also delete a real seat level that is seen past desk edge cells. On glossy floors the rule also throws away the valid miss votes for raised levels that the ray crossed before it reached the mirror.
+   EVIDENCE: Plan P1 IsReflection pseudo-code ('for each level U with p.y < U.Height - band(d) ...', then 'AddVote(reflectionLevel, reflectionCell, hit, weak) ... continue'); RoomSurfaceMap.cs:374-383; SurfaceEvidence.cs:28-36
+   FIX: Apply the mirror rule only to the floor level, only when the floor is Trusted, and only with depth-confirmed floor cells as solid (never prior cells). For raised levels, a see-through point that lands within HitTolerance(d) of a known lower surface (floor or seat) is a real miss. A point that lands below the floor or in empty space gives no vote at all. For floor reflections, still cast miss votes on every raised level crossed between the camera and the floor crossing; drop only the part of the ray beyond the mirror, which is what P4 already does for obstacles. Compute the ghost test for levels below the floor only.
+
+2. [major] P1 constants and discovery rules versus P6 dense sampling (DepthUnprojectJob stride 1 when w*h <= 20000)
+   PROBLEM: Every gate in P1 is an absolute sample count that was tuned for today's 40 x ~87 = 3480 points per frame (DepthScanSource.cs:23-24): DiscoveryThreshold 150 / FrameCap 60 (RoomSurfaceMap.cs:44-48), ghost SeenCount >= 50, besideBelowPerSecond >= 300, FusionMass 200, IsConfirmed window mass 30. On 160x120 depth, P6 raises this to 19,200 points (5.5x). Then a single bag top or backrest makes a new level in about 3 frames. A handful of glossy-tile outliers (0.2 % of 150k points/s) demotes a correct Trusted floor every few seconds, and the floor flips between Trusted and Candidate, switching the reflection protection on and off. Ghost verdicts would be made from one frame.
+   EVIDENCE: -
+   FIX: Express the gates in distinct cells and keyframes, not raw points. Discovery: >= 30 distinct cells (0.075 m2) at the new height in >= 3 keyframes. Ghost and beside-below: ratios with a minimum distinct-cell count (e.g. >= 40 cells) and, for demotion, a coherent up-facing planar cluster (+-3 cm, >= 0.5 m2 of distinct cells). Normalise FusionMass by capping each cell's per-frame weight. Add a regression test that feeds the same scene at 3480 and at 19200 points per frame and asserts the same levels and floor state.
+
+3. [major] P1/P4 managed integration cost (RefineHeights, CollectVotes, obstacle AddHit and DDA) against the P6 budgets 'integrate <= 2 ms, obstacles <= 2 ms'
+   PROBLEM: IsReflection runs up to three times per point (RefineHeights, CollectVotes, obstacle loop). Each call walks the levels above the point and does a Dictionary<Vector2Int,SurfaceChunk> lookup per level (SurfaceLevel.cs:26, 302-307). The miss votes and obstacle hits add more lookups. My estimate, not a measurement: about 0.5 us per point in IL2CPP on a Cortex-A78, so 2-4 ms per integration at 3480 points and 12-20 ms at P6 stride 1. The P4 managed DDA adds about 1740 rays x ~40 steps x ~80 ns, roughly 6 ms, before P6. Integration runs every 0.125 s (RoomScanner.cs:20), so about every 4th frame at the 30 fps cap would take 45-55 ms: regular judder while scanning.
+   EVIDENCE: -
+   FIX: Compute each point's flags once per frame (reflection, nearest level, crossing cells) into reused arrays and share them between the height, vote and obstacle passes. Cache the current chunk inside loops and in the DDA (look it up again only when crossing a 32-cell chunk border). Set a hard budget of <= 6000 points per frame for the managed path, with a per-row stride from ground-sample distance: stride = max(1, floor(0.05 m / (d * pixelAngle))). Do not use the 'w*h <= 20000 -> stride 1' rule. Votes count once per cell per frame, so stride 1 adds almost nothing on surfaces. Before P6, run the DDA only for rays that end on floor hits, and add an 'any obstacle in this chunk' bit so empty chunks are skipped without per-cell lookups.
+
+4. [major] P6 DepthUnprojectJob / ObstacleRayJob and the '#if ERASMUS_HAS_BURST' managed fallback
+   PROBLEM: The expensive data cannot be reached from Burst. SurfaceChunk (SurfaceLevel.cs:322-330) and the planned ObstacleMap chunks are managed classes holding float[]/bool[]/byte[]. So only unprojection, the cheapest step, is Burst-compiled, and all voting stays managed. ObstacleRayJob must also write every (cell, rayHeight) step to a NativeList, because it cannot read Top(cell). That is up to 9600 rays x 90 steps = 864k entries (~10 MB) per frame, and handing them to managed AddMiss costs more than running the DDA in managed code. The fallback path is dead weight: Burst and Collections are always present through URP core, which the toolkit requires. Running every test on both paths doubles the test and maintenance cost.
+   EVIDENCE: Packages/packages-lock.json:45-49 (com.unity.burst 2.0.0 builtin), :58-60 (collections 6.6.0), :168-176 (render-pipelines.core depends on burst 1.8.14 and collections 2.4.3); SurfaceLevel.cs:322-330
+   FIX: Move the per-level cell storage and the obstacle columns to native memory: a NativeParallelHashMap<int2,int> from chunk to slot, plus Persistent NativeArray pools (logOdds, prior bits, per-frame hit/miss counters, Top, TopCount, stamps). Run vote accumulation, the Top test and the DDA inside one Burst IJob (one thread is enough) that outputs only per-touched-cell aggregates. Require Burst (it comes with URP) and drop the #if fallback. Keep one managed reference implementation in the test assembly only, used by a 'MatchesTheManagedSampler' style comparison.
+
+5. [major] P1 Rebuild ('all |= changed'), P5 per-level pipeline, P4 Cluster every rebuild, colliding with RoomScanner.cs:306-343, SurfaceLevel.CopyTo 215-251, ArcorePlanePriors.cs:13 and SurfaceLevel.ClearPriors 184-192
+   PROBLEM: Every rebuild processes each dirty level over its whole chunk bounding box. ArcorePlanePriors.Apply calls map.ClearPriors() whenever planes change, which marks every level dirty, so during a scan all levels are rebuilt every 0.5 s. The plan adds more work on top: 'all |= changed' whenever any HeightLock slews (it moves 1 cm per rebuild), the existing floor-moved rebuild of all levels (RoomScanner.cs:310-315), and P5's close/open, components, blur, marching squares, chaining, Douglas-Peucker, snapping, an O(n^2) trapezoid fill (the floor has many holes from blocked chair footprints) and the raster back into the grid, plus P4 clustering. A 20 x 15 m classroom is about 120k cells per level, and the floor, desk and seat levels all span the room. My estimate is 30-80 ms spikes every 0.5 s in IL2CPP, against the plan's 4 ms budget, so the frame visibly hitches twice a second.
+   EVIDENCE: -
+   FIX: (1) Build each level mesh at local y = 0 and apply DrawnHeight through the LevelView transform. A height slew then costs no re-meshing. Rebuild occluder walls only when the height moved > 5 cm. (2) Compare the new prior raster per chunk and mark only chunks whose prior bits changed. (3) Time-slice: at most one level per frame. Process the floor in 32x32 tiles with a 2-cell halo for morphology and blur, and use global union-find only for the area tests. (4) While scanning, run the full P5 polygon pipeline at <= 1 Hz and once at FinishScan. Use the plain marching-squares path in between.
+
+6. [major] P6 adaptive rates ('frame-time average > 40 ms for 2 s ... back when < 30 ms for 5 s') and ProfilerMarkers
+   PROBLEM: Both scenes have ARSession Match Frame Rate on, so AR Foundation sets Application.targetFrameRate to the ARCore rate (30). deltaTime then sits at about 33 ms, so 'back when < 30 ms' can never be true: after the first slowdown the scan stays degraded for the rest of the session. ProfilerMarkers are compiled out of non-development players, and Frame Timing Stats are off, so the plan has no real CPU measurement on the phone. Nothing reacts to heat: the URP asset flags Adaptive Performance, but the package is not installed.
+   EVIDENCE: Assets/ErasmusARToolkit/Samples/Scenes/ARToolkitDemo.unity:992 and Assets/ARToolkitContent/Scenes/ARScene.unity:893 (m_MatchFrameRate: 1); Library/PackageCache/com.unity.xr.arfoundation@d57b0b4d336a/Runtime/ARFoundation/Session/ARSession.cs:400; ProjectSettings/ProjectSettings.asset:160 (enableFrameTimingStats: 0), :183 (AndroidMinSdkVersion: 29); Assets/Settings/Mobile_RPAsset.asset:79; Packages/manifest.json (no com.unity.adaptiveperformance)
+   FIX: Time the scan work with Stopwatch.GetTimestamp around Capture, Integrate and Rebuild (no allocation, works in release builds) and keep a 2 s moving average. Degrade when scan CPU > 6 ms per frame on average or deltaTime > 40 ms. Recover when deltaTime <= 36 ms and scan CPU < 3 ms for 5 s. Poll PowerManager.getCurrentThermalStatus through AndroidJavaObject every 10 s (API 29 = the project's MinSdk). At MODERATE: integrate at 4 Hz, run obstacle rays every 4th frame, no P5 while scanning. At SEVERE: auto-finish the scan and tell the user. Either remove m_UseAdaptivePerformance or add the package.
+
+7. [major] P1 FloorModel.Update (candidate pick, trust, 'remove levels with Height < F - 0.06', AddPrior ignore below F - 0.06, no discovery below F, solid = HasPrior when Trusted)
+   PROBLEM: The floor can still lock onto a desk, seat or bench, and a wrong trust is destructive and sticky. (a) 'Lowest candidate with S >= 0.3*S_max': the desk level adds up every desk plane, and ARCore hulls overreach, so early in the scan the floor can fall below 30 %. (b) cameraTop = max(cameraTop*0.999, cameraY) decays an absolute coordinate. With CameraYOffset 0 the camera starts near y = 0, so the decay means nothing; after P2 it behaves differently again. One raised arm (1.7 m) makes a 0.75 m desk pass 'cameraTop - h >= 0.8', and a chair-seat level (0.45 m) passes for any standing adult (1.4 - 0.45 = 0.95). (c) besideBelowRatio is never defined; with no looks beside the candidate it is 0/0 and so '< 0.2'. Once the wrong level is trusted: the real floor level is deleted, ARCore floor planes are ignored, discovery below is blocked, and floor points seen past the wrong floor's prior overreach count as reflections. That hides the evidence needed for demotion. Scan start on a teacher podium (+0.2 m) removes the whole student floor the same way.
+   EVIDENCE: -
+   FIX: (1) Floor candidacy needs 'under-the-user' support: >= 0.3 m2 of confirmed up-facing hits within 1.0 m horizontally of camera positions visited, backed by a guided first step 'point at the floor by your feet' (like Quest's floor confirmation). Seated scans can instead qualify with area >= 3 m2 plus >= 500 beside-below test rays at a ratio < 5 %. (2) Replace cameraTop with the 80th percentile of camera height over a 20 s sliding window, minus the level height. (3) Define besideBelow as (rays that cross the candidate height through non-solid cells and end more than band(d) below) / (all such crossing rays), with at least 500 such rays before trust. (4) On trust, never delete lower levels: mark them Suppressed (hidden, not integrated, chunks and priors kept) and restore them on demotion. Delete only after a ghost verdict. (5) Floor tiers: a level with area >= 2 m2 within 0.4 m below F that ever had under-the-user support becomes F. A podium above it is a surface, not an obstacle.
+
+8. [major] P1 PriorsNeedConfirmation (PrecisePriorWeight 0.25 < show 0.30), trust needs A_d >= 0.5 m2 depth-confirmed, confidence 128/160/180
+   PROBLEM: On the reported glossy or plain tiles, ARCore raw depth often has few pixels with confidence >= 128. Precise priors never show without a hit, and trust needs 0.5 m2 of depth-confirmed floor. So the floor may never be drawn, which is worse than today's prior-only floor. The floor may also never become Trusted, so the reflection protections never switch on for exactly the floor type in the complaint. 'Denser sampling' and 'morphology' do not help when the whole floor is below the confidence threshold.
+   EVIDENCE: -
+   FIX: Treat 'no confident depth' differently from 'evidence against'. For each level: if its ARCore plane area is >= 2 m2 and, over 5 s of floor-looking keyframes, the confident-pixel ratio inside the plane is < 15 % with no miss votes, show the prior cells at PriorWeight 0.5 and allow trust from the ARCore plane plus the under-the-user test. Show the diagnostics state 'floor from ARCore plane' and a hint to the user ('shiny or plain floor: move slowly, turn on more light').
+
+9. [major] P1 RefineHeights fusion branches, floor clamp -0.02/+0.03, HeightLock down-step rule
+   PROBLEM: (1) The third branch sets L.Height = L.PlaneHeight whenever depth mass < FusionMass. With a shared histogram that decays 0.97 per frame (about 3 s memory), looking at the board for a few seconds snaps the floor back to the plane height, and looking down brings the depth mode back. Values up to 5 cm apart then make HeightLock slew up and down at 2 cm/s over and over: the grid and every bound object 'breathe'. (2) The floor may sit at most 3 cm above the plane. On glossy tiles, feature points on reflections can pull the ARCore plane low, so depth can never lift the floor and S1 stays. (3) 'if delta < -0.03 && !planeAgreesDown: delta = -0.03' does nothing: the slew clamp (0.01 per 0.5 s) is tighter, and each call keeps descending.
+   EVIDENCE: -
+   FIX: When depth mass drops, keep the last fused height. Use PlaneHeight only for a level that never had depth support. Make the clamp asymmetric (-0.02 / +0.08) and allow the upper part only when the depth mode is sharp (mass inside +-1.5 cm >= 60 % of the window). The known biases (reflections, scale error) only push depth down. Implement the down-step limit against the last plane-agreed value: Value >= lastAgreed - 0.03 unless planeAgreesDown.
+
+10. [major] P4 ObstacleMap hits, blocking and Raycast refusal
+   PROBLEM: Real classroom use creates phantom obstacles. (1) When the user looks down, their own feet and legs are 1.0-1.3 m away, inside the 0.4-3.5 m hit range, so they become obstacles and blocked floor cells wherever the user stood, and 'refuse when the ray enters a volume of kind Other' then blocks placement near the user. (2) A person standing for 0.4 s (3 frames at 8 Hz) is blocked with logOdds rising toward 2.0; clearing needs about 12 frames of floor observation of that exact spot, which often never happens, so the floor has holes (S3). (3) The plan's own noise model gives sigma(3.5 m) = 7.1 cm, so 2 sigma = 14 cm is above the 0.08 m band floor. Correlated depth blobs on glossy tiles become speckle obstacles, and the 4-cell minimum component lets them through. (4) Moved chairs keep their old box until re-observed.
+   EVIDENCE: -
+   FIX: (1) Body exclusion: ignore obstacle hits within a capsule of radius 0.45 m around the camera's XZ, shifted 0.2 m against camera forward, up to floor + 2.0 m. (2) Lower band = max(0.08, 3*sigma(d)), and for h < 0.3 m accept hits only at d <= 2.5 m. (3) A cell is Blocked only after hits in >= 2 keyframes >= 1.5 s apart; minimum component 8 cells. (4) Keep per-cell last-hit stamps for the floor and the obstacle layers, and let the newer evidence win. This clears moved chairs and people who left without an explicit miss. (5) Raycast refuses only volumes with age >= 3 s and confidence above a threshold, and never when the hit lies on shown cells of a level that coincide with the box top (tables, podium).
+
+11. [major] P4 ObstacleMap.AddHit(cell, heightAboveFloor), fed 'when floor.State != Unknown'
+   PROBLEM: Tops and hit bands are stored relative to the current floor F, and they are fed while the floor is only a Candidate. When the floor changes identity (a desk candidate replaced by the real floor), slews (HeightLock), or moves by HeightOffset after a tracking loss, every stored Top and TopCandidate refers to the wrong reference. Boxes get wrong heights, and cells classified against the desk as 'floor' are garbage.
+   EVIDENCE: -
+   FIX: Store absolute map-space Y for Top and hits, and apply the band floor+0.08..floor+2.0 when querying and clustering. Feed obstacles only while the floor is Trusted, or clear the obstacle map when the floor LevelId changes.
+
+12. [major] RoomScanner.Integrate cadence (RoomScanner.cs:20, 277-289): no keyframe or novelty gating in the plan
+   PROBLEM: Every 0.125 s the same view is integrated again. 'Each cell counts at most once per frame' treats temporally correlated noise as independent evidence. A user standing still (the teacher talking) saturates noise cells at MaxLogOdds 1.6 in 8 frames, blocks obstacles in 3 frames, and reaches the FloorModel's '16 stable frames' in 2 s without exploring anything. Depth-from-motion is also worst when the phone does not move. The work burns CPU and heat for no new information.
+   EVIDENCE: RoomScanner.cs:20 (IntegrateInterval 0.125f), :277-289; SurfaceEvidence.cs:28,36; Tests/Editor/RoomScanSimulationTests.cs:19 (FramesPerPose = 3)
+   FIX: Integrate a depth frame only when the camera moved >= 0.05 m or turned >= 4 degrees since the last integrated frame, or when >= 1 s has passed (then at half hit/miss weight, to track dynamic changes). Count trust, persistence and 'stable frames' in keyframes. Put the gate in RoomScanner, not in RoomSurfaceMap, because RoomScanSimulationTests deliberately integrates each pose 3 times.
+
+13. [major] P2 MapFrame.Begin / Refresh / ReverifyAfterTrackingLoss
+   PROBLEM: (1) At StartScan the 'largest tracked HorizontalUp plane' is often a desk (the plan's own §0.2), and ResetScan keeps that anchor. (2) AR Foundation removes a subsumed plane. The research notes say to re-attach the anchor to the subsuming plane; the plan does not, and an anchor on a removed plane may stop updating while the scan root keeps following it. (3) ARCore's plane centre pose aligns its X/Z axes with the plane's bounding rectangle, so the pose of a plane-attached anchor may turn when the floor plane grows or merges. Refresh applies every change to the root, and a 3 degree yaw change moves content 26 cm at 5 m. (4) After a long tracking loss where ARCore does not relocalise, the anchor stays paused or stale while integration continues into the old map frame. The re-verification checks only floor height, not XZ or yaw. (5) One anchor for a room larger than about 8 m goes against Google's guidance to keep content within 8 m of an anchor.
+   EVIDENCE: Library/PackageCache/com.unity.xr.arfoundation@d57b0b4d336a/Documentation~/features/plane-detection/arplane.md:43; scratchpad research.txt:32 and :223 ('re-attach to the subsuming plane'); ARCore ArPlane_getCenterPose reference (+X/+Z along the bounding-rectangle extents)
+   FIX: Start with a free anchor. Move to a floor-plane anchor only when the floor is Trusted, computing HeightOffset and yaw so nothing jumps. Subscribe to planeManager trackablesChanged.removed and to anchor.trackingState: on subsumption, re-attach to subsumedBy at the current map pose; while the anchor is not Tracking, pause integration and freeze the root. Apply a per-update anchor change only if it is <= 2 cm and <= 0.5 degrees; for larger jumps, freeze and validate first. After relocalisation, validate XZ with the share of desk-height depth points that land on shown desk cells (need >= 60 %), not only the floor height. Clamp the map to about 8 m from the anchor, or plan per-region anchors.
+
+14. [major] P4 obstacle mask 'cell shown on a level with DrawnHeight >= F + 0.15' plus P4 Raycast refusal, colliding with the P1 floor guard
+   PROBLEM: A teacher podium or stage (0.15-0.3 m, several m2) becomes an ObstacleVolume of kind Other: it fits neither Table (0.55-1.2 m) nor Seat (area > 0.5 m2). Raycast then refuses rays whose entry into the padded box is at or just before the hit, so placing things on the podium, or on the floor just past its edge, fails at random. Low stages, benches and large low cabinets swallow placeable area the same way.
+   EVIDENCE: -
+   FIX: Levels with area >= 1.5 m2 and height < 0.4 m above F are surfaces (floor tiers), not obstacles. In the Raycast volume test, use t_enter < t_hit - 0.02 m. Never refuse a hit on a shown level cell whose box top equals that level.
+
+15. [minor] P0 ARToolkitManager.ApplyMode keep-awake (Screen.sleepTimeout = NeverSleep for all of AR mode); on-device checklist #14
+   PROBLEM: In a 40-minute lesson, phones left on desks in AR mode keep the camera, ARCore depth (AROcclusionManager stays on for P3) and 30 fps rendering running with the screen on. That means heat, throttling and battery drain, while today the system timeout lets the app pause and cool down. Checklist item 14 actively encourages this.
+   EVIDENCE: -
+   FIX: Use NeverSleep only while scanning, or for 3 minutes after the last touch or manipulation; otherwise use SleepTimeout.SystemSetting. While tracking has been lost for more than 10 s, pause the scan and contact-depth work. Add a 40-minute soak to the checklist: thermal status, battery % per 10 min, 5th-percentile fps.
+
+16. [minor] P1 Capture in RenderPipelineManager.beginCameraRendering; DepthSnapshot.CopyFrom
+   PROBLEM: Capture acquires the raw depth CPU image every render frame (30 Hz) only to check whether the timestamp changed, three times the current rate, and the ARCore cost of each acquire (reprojection) is unknown. CopyFrom does not mention rowStride/pixelStride, which the current reader honours. Jobs scheduled in the callback are not completed in OnDisable/OnDestroy before the snapshot arrays are disposed.
+   EVIDENCE: DepthPixels.cs:27-30, 87
+   FIX: Acquire only while scanning or checking the mapping, and only when >= 80 ms have passed since the last new timestamp. Copy row by row using plane.rowStride and pixelStride. Call Complete() on the job handle in OnDisable and OnDestroy before Dispose(). Add 'Capture ms' to the diagnostics line.
+
+17. [minor] P6 SurfaceChunk 'byte[] FrameHits, FrameMisses'
+   PROBLEM: At 0.4-0.6 m, with 160x120 depth (~3 mm per pixel), one 5 cm cell collects about 200 pixels at stride 1, and far more on 640x480 devices. A byte counter wraps, so 'hits >= misses' flips and a hit cell is carved.
+   EVIDENCE: -
+   FIX: Use ushort counters with saturating add, or keep a signed per-frame balance clamped to +-127.
+
+18. [minor] P0 diagnostics logging and HUD line; P3 ContactDepthView; P1/P3 IReadOnlyList loops; P5 PolygonRaster callback
+   PROBLEM: This is garbage collection and logging cost that keeps adding up while scanning. (1) Player stack traces are on for every log type, so each 2 s diagnostics Debug.Log and each event log collects a managed stack trace. (2) The HUD label update rate is not specified, and setting UI Toolkit text every frame re-lays out and allocates. (3) ContactDepthView calls ObjectUtility.GetRendererBounds, which allocates through GetComponentsInChildren, every 0.25 s per object. (4) foreach over IReadOnlyList<T> (FloorModel.Update, ContactDepthView.Refresh, Rebuild's foreach over map.Levels) boxes the enumerator. (5) An Action<int,int,int> lambda that captures variables allocates a closure on every call.
+   EVIDENCE: ProjectSettings/ProjectSettings.asset:58 (m_StackTraceTypes all 01); Runtime/Core/ObjectUtility.cs:27; RoomScanner.cs:322
+   FIX: Log with Debug.LogFormat(LogType.Log, LogOption.NoStacktrace, null, ...). Update the HUD at <= 2 Hz and only when the string changed. Use GetComponentsInChildren(List<Renderer>) with a cached list, and cache bounds until the transform changes. Use for loops over IReadOnlyList. Use a struct callback or a cached delegate for FillRows.
+
+19. [minor] P5 'PolygonRaster.FillRows(loops) -> grid shown flags -> level.StoreShown' feeding the P1 hysteresis 'wasShown'
+   PROBLEM: The drawn polygon (snapped, rectangle-fitted, up to 10 cm outside the evidence) is written back into chunk.Shown, and the hysteresis rule reads that as wasShown. Cells with a small positive logOdds (weak reflection hits of 0.1, noise) inside the extension stay shown and push the next polygon outward: the outline slowly creeps.
+   EVIDENCE: -
+   FIX: Keep two masks: Kept (the evidence and hysteresis state, before any polygon) and Drawn (the polygon raster, used for Raycast and the obstacle mask). The hysteresis reads only Kept.
+
+20. [minor] P1 FloorModel keyed by LevelId versus MergeCloseLevels (RoomSurfaceMap.cs:315-334)
+   PROBLEM: MergeCloseLevels keeps the level with the larger SampleCount. When the floor is absorbed into a drifted duplicate, FloorModel sees 'pick != current', drops to Candidate and resets stableFrames to 0, and the kept level's HeightLock value can differ, so the drawn floor jumps.
+   EVIDENCE: -
+   FIX: When the dropped level is the floor, the kept level inherits IsFloor, the trust state, stableFrames and the HeightLock value.
+
+21. [minor] Level count (P1 discovery, P3 8 slots), no cap
+   PROBLEM: A classroom easily has more than 8 levels (floor, seats 0.45, desks 0.75, windowsill, cabinet tops, shelves, bags). All per-point loops are O(levels), and the depth slots run out.
+   EVIDENCE: -
+   FIX: Cap at 12 levels. Prune levels with ConfirmedArea < 0.1 m2 that are older than 10 s. Discovery by area, as in the density issue.
+
+22. [minor] P5 'opening on the floor only; raised: Close only'
+   PROBLEM: Chair backrest tops (0.75-0.85 m) merge into the desk level (merge distance 0.08) as strips 1-2 cells wide that join desks and chairs. That is S4 bleed, and it breaks the >= 0.85 rectangle fit for desks.
+   EVIDENCE: -
+   FIX: Apply a 3x3 opening to raised levels as well, or remove strips narrower than 2 cells before the component and rectangle steps.
+
+23. [minor] P3 BuildFloorSteady 'at most 12 x 12 m'
+   PROBLEM: Where the 12 m window sits is not specified. In halls or gyms, parts of the floor get no steadying, so S2 returns there.
+   EVIDENCE: -
+   FIX: Centre the window on the camera's XZ and rebuild it when the camera moves more than 3 m from the window centre.
+
+24. [minor] P1 'Max translation speed 1.0 m/s'
+   PROBLEM: Normal walking speed is 1.2-1.4 m/s, so students walking around while scanning lose many frames and coverage builds slowly.
+   EVIDENCE: -
+   FIX: Use 1.5 m/s, and add a motion-blur limit from angular speed (the existing 60 deg/s) combined with translation.
+
+25. [minor] P1 'Raycast uses level.DrawnHeight' plus the claim that all other existing tests keep their assertions
+   PROBLEM: DrawnHeight is updated only in RoomScanner.Rebuild. Map-only tests such as RoomScanSimulationTests.Raycast_OnTheDesk_ReturnsTheRealDeskHeight (27 integrated frames, never UpdateDrawnHeights) will get the lock's first value or the seed height instead of the corrected height.
+   EVIDENCE: Tests/Editor/RoomScanSimulationTests.cs:50-59, 125
+   FIX: Raycast falls back to Height while HeightLock.HasValue is false, or the ShowAll test helper calls UpdateDrawnHeights with a large dt. Update the claim in the plan.
+
+26. [minor] P0 mobile render settings (not covered)
+   PROBLEM: HDR is on in Mobile_RPAsset, which costs bandwidth and heat with no benefit for an LDR camera feed. Optimized Frame Pacing is off, so 30 fps pacing is uneven, which adds to the perceived judder from the scan spikes.
+   EVIDENCE: Assets/Settings/Mobile_RPAsset.asset:26 (m_SupportsHDR: 1); ProjectSettings/ProjectSettings.asset:72 (androidUseSwappy: 0)
+   FIX: Turn HDR off in Mobile_RPAsset and turn on androidUseSwappy. Keep renderScale 0.8 until thermal measurements show headroom.
+
+MISSING:
+ - Keyframe or novelty gating (move >= 5 cm or turn >= 4 degrees) so evidence counts only independent views; also saves CPU and heat while the user stands still.
+ - Exclusion of the user's own body (feet and legs) from obstacle hits and from blocking the floor.
+ - A recency rule between the floor and obstacle layers (per-cell last-hit stamps) for moved chairs and people who walked through.
+ - Floor tiers (teacher podium or stage) and the under-the-user floor test, with a guided 'point at the floor by your feet' first step.
+ - Fallback for glossy or plain floors with low confidence: show ARCore plane priors and allow trust from the plane when confident depth is missing, plus a hint to the user.
+ - Thermal handling: PowerManager.getCurrentThermalStatus (MinSdk 29) with MODERATE/SEVERE throttles, auto-finish of the scan after about 20 s without coverage growth, and a scan time cap.
+ - Scan cost timed with Stopwatch in release players (ProfilerMarkers are compiled out and FrameTimingManager is disabled), with adaptive-rate thresholds that work under the 30 fps cap.
+ - A point budget per frame, and a native-memory layout for the level and obstacle cells, so the Burst work actually covers voting and ray casting.
+ - Cheap re-meshing: level height applied through the transform, a prior diff per chunk, and time-sliced or tiled rebuilds for large rooms.
+ - A level cap and pruning; discovery thresholds based on area and keyframes instead of raw sample counts.
+ - Anchor lifecycle: start with a free anchor, move to the floor anchor once the floor is trusted, re-attach when the plane is subsumed, handle anchor tracking state and OnApplicationPause/resume, check XZ after relocalisation, and limit the map radius to about 8 m.
+ - EditMode performance benchmarks with com.unity.test-framework.performance (builtin 6.6.0 in packages-lock): Integrate of a 19,200-point frame with 8 levels, Rebuild of a 20 x 15 m room, and zero GC.Alloc per integration.
+ - Simulation tests for the failure modes above: moved chair, person walking through, user standing still, the user's feet, start on a podium, desk scanned first with a 1.7 m camera, floor merged into a duplicate, anchor subsumed or removed, relocalisation with an XZ offset, more than 12 levels, and the same scene at 3480 and 19200 points per frame.
+ - Device checklist pass/fail thresholds: 95th-percentile frame time <= 40 ms during a 5-minute scan, no hitch > 50 ms at rebuilds, thermal status <= MODERATE after a 40-minute soak, battery drain per 10 min, and a low-end ARCore depth phone (e.g. a Snapdragon 4-series or Helio G-series phone with 3-4 GB RAM) in addition to a mid-range one.
+ - Job lifecycle safety: Complete() before disposing native arrays in OnDisable/OnDestroy, and disposal on Editor domain reload.
+
+=========== critic:arcore-api verdict=sound-with-fixes issues=15 ===========
+
+1. [blocker] P0, ARToolkitManager.EnsureOriginSettings() in Awake: `GetComponent<XROrigin>().CameraYOffset = 0f`
+   PROBLEM: ARToolkitManager sits on the scene root. XROrigin sits on the child 'XR Origin (Mobile AR)', which is also saved inactive. So GetComponent<XROrigin>() on the manager returns null. The resulting NullReferenceException stops Awake part-way: EnsureRoomScanner, RealWorldOcclusion.Configure and the rig deactivation may never run, and every AR scene breaks at startup.
+   EVIDENCE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Editor\Services\SceneBuilder.cs:105 (`root.AddComponent<ARToolkitManager>()`) vs :143 (XROrigin on child) and :130 (origin.SetActive(false)); the existing code already does it right in ARToolkitManager.cs:171-172 (`arOriginObject.GetComponent<XROrigin>()`)
+   FIX: Use `arOriginObject != null ? arOriginObject.GetComponent<XROrigin>() : null` and check for null. SceneUpgrader.Apply should reach the origin through the manager's serialized arOriginObject field (internals are visible to the Editor assembly through Runtime/Core/AssemblyInfo.cs). Setting CameraYOffset before the origin is activated is safe: XROrigin keeps m_CameraYOffset and applies it in SetupCamera/MoveOffsetHeight (XROrigin.cs:176-182, 223-241, 352-353).
+
+2. [major] P2 RoomScanner.StartScan / MapFrame.Begin: `AttachAnchor(largest tracked HorizontalUp plane, ...)`
+   PROBLEM: (a) This contradicts the plan's own correction 0.2: at StartScan the largest HorizontalUp plane can be a desk. The map would then be tied to a desk plane and would inherit its height refinements. (b) AttachAnchor throws InvalidOperationException, not null, when the manager is disabled or has no subsystem. The plan only handles 'no anchor manager'. (c) An ARAnchor removes itself from ARCore in OnDisable and is never re-added in OnEnable, because its trackableId is already valid. Any deactivation of the XR Origin or the anchor object silently kills the map anchor. (d) Nothing shows that the yaw of a plane-attached anchor stays stable while ARCore re-fits the floor polygon. AR Foundation says a plane's position, rotation and center change over time, and the ARCore plane center pose is oriented to the bounding rectangle. A yaw change would rotate the whole map.
+   EVIDENCE: ARAnchorManager.cs:131-146 (throws at 133-137; pose is world space and converted with TrackablesParent.InverseTransformPose); ARAnchor.cs:24-46; com.unity.xr.arfoundation Documentation~/features/anchors/introduction.md:43; research.txt:112 (center pose = bounding-rectangle centre); ARCoreAnchorSubsystem.cs:375-381 (supportsSynchronousAdd = true, trackable attachments = true)
+   FIX: At StartScan, create the map frame from a free anchor: TryAddAnchorAsync, or a synchronous ARAnchor, which is fine on ARCore. Take XZ and yaw from that anchor. Only when FloorModel reaches Trusted, AttachAnchor to the floor plane and use only its Y delta as HeightOffset. Guard every call with `anchors.isActiveAndEnabled && anchors.subsystem != null && anchors.descriptor.supportsTrackableAttachments && plane.trackingState == TrackingState.Tracking`, inside a try/catch. Subscribe to ARAnchorManager.trackablesChanged: if the map anchor appears in removed or becomes null, re-create it at the last MapToWorld pose. Add a device check that logs the plane-anchor yaw while the floor polygon grows. Keep content within about 8 m of an anchor, as Google advises.
+
+3. [major] P4 'Optional walls': 'All existing consumers already filter by alignment'
+   PROBLEM: This is false. The placement raycast takes Hits[0] of PlaneWithinPolygon with no alignment check, so with Vertical detection on, a tap near a wall places the object on the wall with the wall's rotation. ARPlaneSurfaces skips vertical planes only for grouping. It still renders them with the base plane material, and that material uses world-XZ UVs, so walls show stretched streaks. PlaneCount also counts wall planes in the status messages.
+   EVIDENCE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Placement\ARPlacementSurface.cs:41-45; Runtime\Placement\ARPlaneSurfaces.cs:118-121,138-143,167-181; Shaders\ARToolkitSurface.shader:5-7 ('a vertical plane would show stretched streaks'); Runtime\Core\ARToolkitManager.cs:100-102
+   FIX: When detectWalls is on: loop over the hits and keep the first one whose `planeManager.GetPlane(hit.trackableId).alignment.IsHorizontal()` is true. In ARPlaneSurfaces.ApplyVisibility, set forceRenderingOff on non-horizontal planes (or give them a wall material with a vertical UV frame). Count only horizontal planes in PlaneCount. Add a play-mode test that has a fake vertical plane.
+
+4. [minor] P0 ARPlaneSurfaces.OnPlanesChanged runtime migration: set trackingStateVisibilityThreshold = Tracking on every added plane
+   PROBLEM: The public setter calls Debug.Log unconditionally, including in release players, and forces UpdateVisibility. In a classroom that means one logcat line and some garbage for every ARCore plane that gets added.
+   EVIDENCE: Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARFoundation\Planes\ARPlaneMeshVisualizer.cs:52-60
+   FIX: Only assign when `viz.trackingStateVisibilityThreshold != TrackingState.Tracking`, which only happens with old prefabs. Rely mainly on the prefab fix (ToolkitAssets.ConfigurePlaneObject, run by Setup and ToolkitPreBuild). The toolkit hides planes with forceRenderingOff (ARPlaneSurfaces.cs:169-181), so the setter's re-enable does not clash with it.
+
+5. [minor] P3 render-pass scheme (Mark/Unmark/Write queues 1940-1975 before occluders and grids)
+   PROBLEM: The scheme only works when ARCore draws the background BeforeOpaques. The provider picks that mode only when the requested mode is Any. If AfterOpaques is requested on the ARCameraManager or ARCameraBackground, the background is drawn after all queues < 2500, and steadying and occlusion break without any error.
+   EVIDENCE: ARBackgroundRendererFeature.cs:321-324 (BeforeRenderingOpaques) vs 355-358 (AfterRenderingOpaques); com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreCameraSubsystem.cs:245-259
+   FIX: SceneUpgrader.Apply and SceneBuilder should set `ARCameraManager.requestedBackgroundRenderingMode = CameraBackgroundRenderingMode.BeforeOpaques`. ScanDiagnostics should log `cameraManager.currentRenderingMode` and warn when it is not BeforeOpaques.
+
+6. [minor] P3 ARToolkitSurface.shader defaults `_HeightTolerance 0.06, _DepthBias 0.02, _MaxDepthBias 0.15` plus ToolkitAssets.UseSurfaceShader resetting existing materials
+   PROBLEM: These materials also draw the raw ARCore planes before any scan and on phones without a trusted floor. There, nothing steadies the depth, and the pull is the only protection against noise (F2). Halving the tolerance brings back grid speckle on glossy tiles before scanning. The research notes explicitly warned to do this only after the floor fixes.
+   EVIDENCE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Shaders\ARToolkitSurface.shader:13-21,28-30,97-102; research.txt:217-219
+   FIX: Keep 0.12/0.05/0.30 on the shared plane and ring materials. Apply the small bias only to RoomSurfaceView's own material copies of levels that hold a steady slot. Optionally give ARCore plane groups steady quads from the ContactDepth pool before lowering their tolerance.
+
+7. [minor] P4 obstacle fill/outline 'LEqual, constant fraction 0.02'
+   PROBLEM: The box faces lie exactly on the real chair or desk surfaces, which are also in the hard per-pixel ARCore depth written by the background. With ARCore noise of about 3 cm at 2 m and only a 2 % pull (4 cm), the translucent boxes will be torn in the same way as S2.
+   EVIDENCE: com.unity.xr.arcore@48fb51f3ca76\Assets\Shaders\ARCoreBackground.shader:167-172,266-277 (ZTest Always, ZWrite On, SV_Depth from _EnvironmentDepth; reversed on Vulkan)
+   FIX: Draw obstacle visuals with a height-aware pull equal to the box height (so the real object itself never hides its box), for example clamp(boxHeight/H, 0.05, 0.5), or with ZTest Always and back-to-front ordering. Keep them depth-only-free as planned.
+
+8. [minor] P1/P2 capture in beginCameraRendering, integration in the next Update, MapFrame refreshed separately; RoomSurfaceView.SetRootPose in LateUpdate
+   PROBLEM: Integration runs every 0.125 s, so a snapshot can be up to 125 ms old when it is integrated, yet it is transformed with the WorldToMap of the integration frame. Separately, XROrigin moves TrackablesParent (and so every anchor's world pose) in Application.onBeforeRender, which runs after LateUpdate. So a scan root that follows the anchor in LateUpdate lags one frame whenever Camera Offset or TrackablesParent changes.
+   EVIDENCE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomScanner.cs:20,144-147,277-289; Library\PackageCache\com.unity.xr.core-utils@a8b900321199\Runtime\XROrigin.cs:599,606-621
+   FIX: Store WorldToMap (the anchor pose) inside DepthSnapshot at capture time and use that when integrating. Parent the 'Room Surfaces (scanned)' root under XROrigin.TrackablesParent and set its localPosition and yaw from the anchor's local (session-space) pose, or update it from XROrigin.TrackablesParentTransformChanged. That also matches the AR Foundation guidance to parent content to trackables.
+
+9. [minor] P1 CameraPoseBuffer / DepthLagMs
+   PROBLEM: The units are handled correctly, but three things are left open. ARCameraFrameEventArgs.timestampNs is `long?` in nanoseconds. XRCpuImage.timestamp is a double in seconds whose epoch the documentation calls platform-defined. The pose buffer's `double time` must be fed `timestampNs.Value * 1e-9`, a null timestamp must be handled, and the DepthTimestamp policy must not be used if the two clocks turn out to differ.
+   EVIDENCE: Runtime\ARFoundation\Camera\ARCameraFrameEventArgs.cs:25; ARCameraManager.cs:442-443 (fired in Update, :375-401); Runtime\ARSubsystems\Common\Textures\XRCpuImage\XRCpuImage.cs:194-202
+   FIX: Push poses keyed by seconds taken from frameReceived (Update, same ArFrame as ARSession.Update). Skip the Push when timestampNs is null. Fall back to the CurrentFrame policy automatically when the measured lag is below 0 or above 0.5 s, and show that state in ScanDiagnostics.
+
+10. [minor] P0 ARToolkitManager: 'Subscribe ARSession.stateChanged'
+   PROBLEM: stateChanged is a static event, and the plan never unsubscribes, so a destroyed manager stays referenced after a scene reload. The trigger itself is valid: Limited tracking maps to SessionInitializing, and notTrackingReason is refreshed just before the event fires.
+   EVIDENCE: Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARFoundation\Session\ARSession.cs:122,127-142,410-419,466-485
+   FIX: Unsubscribe in OnDisable/OnDestroy. Implement 'lost > 2 s' as a timer started on SessionInitializing and cleared on SessionTracking. Read ARSession.notTrackingReason inside the handler; it only changes on state transitions.
+
+11. [minor] P0 BuildRunner.GetBlockingProblem calls EnsureRoomScanAssets(GetOrCreateTheme())
+   PROBLEM: GetBlockingProblem also runs on every BuildTab refresh, for both Android and Windows. The plan would make a status query create materials, change render queues and call AssetDatabase.SaveAssets every time the tab repaints.
+   EVIDENCE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Editor\Tabs\BuildTab.cs:82; Editor\Services\ToolkitAssets.cs:60-108 (GetOrCreateTheme already mutates: UseSurfaceShader, SetOpaqueRenderQueue, SaveAssets)
+   FIX: Make GetBlockingProblem side-effect free: load the theme with AssetDatabase.LoadAssetAtPath and check HasRoomScanAssets. Do the repair in BuildRunner.RunBuild and ToolkitPreBuild (callbackOrder -200 runs before ReferenceLibraryPreBuild at -100 and ARCorePreprocessBuild at 1). Assets created there are picked up, the same way ARCoreImageLibraryBuildProcessor does it.
+
+12. [minor] P0 ToolkitSceneProcessor : IProcessSceneWithReport
+   PROBLEM: OnProcessScene also runs when entering Play Mode (report == null). It would then change the play-mode scene on top of ARToolkitManager's own runtime migration. The XR Origin in toolkit scenes is inactive, so plain FindObjectsByType calls miss it.
+   EVIDENCE: SceneBuilder.cs:129-130 (session/origin saved inactive); ARToolkitManager.cs:120-126 (runtime migration already exists)
+   FIX: Return early when `report == null`. Look up objects with FindObjectsInactive.Include (SceneQueries.FindAll), and do nothing in scenes that have no ARToolkitManager.
+
+13. [minor] P0 ProjectConfigurator.SetDepthOptional()
+   PROBLEM: 'Depth Required' only adds `<uses-feature com.google.ar.core.depth required=true>` to the manifest, which only affects Play Store filtering. APKs that teachers sideload behave the same either way, so this fixes no symptom and quietly changes a project setting. The SerializedObject route also needs ApplyModifiedProperties and SaveAssets.
+   EVIDENCE: Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Editor\ARCoreBuildProcessor.cs:241,366-368; Editor\ARCoreSettings.cs:52-67,121-134,161
+   FIX: Make it an explicit Setup row with an explanation instead of part of RunAll, or drop it. If kept, call `serialized.ApplyModifiedPropertiesWithoutUndo(); EditorUtility.SetDirty(s); AssetDatabase.SaveAssets();`, or add a Unity.XR.ARCore.Editor reference and use the public `ARCoreSettings.currentSettings.depth`.
+
+14. [minor] P6 asmdef version define ERASMUS_HAS_BURST plus managed fallback plus 'all existing tests run against both paths'
+   PROBLEM: In 6000.6, com.unity.burst 2.0.0 and com.unity.mathematics 1.4.0 are shim packages that only forward types to engine modules. Burst is always present as a dependency of render-pipelines.core, so the managed fallback path cannot occur in this editor, yet the plan doubles the test matrix for it. Jobs scheduled inside a render callback also do not start until the batch is flushed.
+   EVIDENCE: Library\PackageCache\com.unity.burst@626e66ab421b\package.json ("type": "shim") and Runtime\TypeForwarders.cs; com.unity.mathematics@8306a64d0cd6\package.json description ('moved to a module'); com.unity.render-pipelines.core@2d66c71e606e\package.json:7-8
+   FIX: Reference Unity.Burst, Unity.Collections and Unity.Mathematics by name without conditions (the shim asmdefs resolve them). Keep one managed reference implementation only as the test oracle (DepthUnprojectJobTests), not as a second runtime path. Call JobHandle.ScheduleBatchedJobs() after scheduling in beginCameraRendering.
+
+15. [minor] P2 shader `_GridFrame` added in P2, set only in P5; own fill/outline material copies only arrive in P3
+   PROBLEM: From P2 to P5 the scanned meshes move with the anchor while the grid UV stays in world XZ (default _GridFrame), so the grid slides across the surface whenever ARCore corrects the anchor. Setting _GridFrame on the shared theme material would also shift the ARCore plane grids.
+   EVIDENCE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Shaders\ARToolkitSurface.shader:104 (uv = positionWS.xz * tiling)
+   FIX: Move the 'own material copies' step into P2 and set _GridFrame (map origin xz, cos/sin of map yaw) on them in LateUpdate from MapFrame.
+
+MISSING:
+ - Checks against the local package sources that passed, so they need no plan change: AttachAnchor is synchronous and takes a world-space pose (ARAnchorManager.cs:131-146). TryAddAnchorAsync returns Awaitable<Result<ARAnchor>> (ARAnchorManager.cs:105). ARSession.stateChanged is static, and Limited tracking maps to SessionInitializing (ARSession.cs:122, 410-419). ARPlaneMeshVisualizer.trackingStateVisibilityThreshold has a public setter. ARCore background is BeforeRenderingOpaques with ZTest Always, ZWrite On and SV_Depth (1-depth on Vulkan). Unity flips ZTest Less/LEqual itself for reversed Z. The URP default depth attachment on Android is D24S8, and Mobile_Renderer uses Forward with depth priming off, so stencil bit 128 is available. XR Simulation provides no CPU depth images, so removing the smoothed fallback costs nothing in the Editor.
+ - A Setup/validation rule for teacher projects: the Android URP renderer must be Forward or Forward+ (Deferred uses stencil), Depth Priming must be Disabled, and the depth attachment must be Default or have S8 (UniversalRendererData.cs:62). Otherwise the stencil-bit plan (1..64 for planes, 128 for steadying) and the depth-write passes break without warning.
+ - Performance budgets must include the URP depth prepass that runs every frame while AROcclusionManager is enabled: ARBackgroundRendererFeature calls ConfigureInput(Depth) at BeforeRenderingOpaques (ARBackgroundRendererFeature.cs:178-188; RealWorldOcclusion.cs comment). Profile it next to the new capture, unproject and rebuild markers.
+ - DepthSnapshot must record WorldToMap, the display matrix and the projection of its capture frame, so that integrating up to 125 ms later does not mix poses.
+ - Handling for the map anchor being removed or turning null (ARAnchorManager.trackablesChanged removed list, ARAnchor.OnDisable -> TryRemoveAnchor), and a rule that the XR Origin is never deactivated during AR (ARToolkitManager.ApplyMode SetActive).
+ - When detectWalls is on: an alignment filter in ARPlacementSurface, hidden or separately styled vertical-plane visuals, and a wall-free PlaneCount.
+ - A device-checklist item for plane-attached anchor yaw and XZ stability while the floor polygon grows and planes are subsumed, before the map frame depends on it.
+ - The capture callback should skip non-AR cameras (Scene view and preview cameras also raise beginCameraRendering in the Editor) and should only acquire XRCpuImages when a scan is running, since ARCore limits the number of images held at once.
+ - IProcessSceneWithReport needs a `report == null` guard, and scene lookups must include inactive objects.

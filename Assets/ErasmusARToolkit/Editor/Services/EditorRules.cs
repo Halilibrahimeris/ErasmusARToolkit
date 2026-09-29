@@ -29,6 +29,36 @@ namespace Erasmus.ARToolkit.Editor
             }
         }
 
+        /// <summary>
+        /// The first scene of the list starts on the phone. Returns a warning when that is a toolkit sample
+        /// while a scene of the project comes later in the list, else null.
+        /// </summary>
+        public static string FirstSceneHint(IReadOnlyList<string> scenes)
+        {
+            if (scenes == null || scenes.Count < 2 || !IsUnder(scenes[0], ToolkitPaths.SamplesFolder))
+            {
+                return null;
+            }
+
+            for (var i = 1; i < scenes.Count; i++)
+            {
+                if (IsUnder(scenes[i], ToolkitPaths.ScenesFolder))
+                {
+                    return $"The app starts with the sample scene '{Path.GetFileNameWithoutExtension(scenes[0])}'. " +
+                           $"Your scene '{Path.GetFileNameWithoutExtension(scenes[i])}' comes later: move it to the " +
+                           "top of the scene list (File > Build Profiles) to start with it.";
+                }
+            }
+
+            return null;
+        }
+
+        static bool IsUnder(string path, string folder)
+        {
+            return !string.IsNullOrEmpty(path)
+                   && path.Replace('\\', '/').StartsWith(folder + "/", System.StringComparison.OrdinalIgnoreCase);
+        }
+
         public static string SanitizeFileName(string name)
         {
             if (string.IsNullOrWhiteSpace(name))

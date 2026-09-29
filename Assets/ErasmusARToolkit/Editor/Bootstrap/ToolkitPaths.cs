@@ -7,7 +7,7 @@ namespace Erasmus.ARToolkit.Editor
     public static class ToolkitPaths
     {
         public const string DisplayName = "Erasmus AR Toolkit";
-        public const string Version = "1.0.0";
+        public const string Version = "1.1.0";
 
         public const string MenuRoot = "Tools/Erasmus AR Toolkit/";
         public const string OpenMenuPath = MenuRoot + "Open Toolkit";

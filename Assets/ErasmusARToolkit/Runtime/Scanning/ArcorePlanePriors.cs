@@ -10,10 +10,12 @@ namespace Erasmus.ARToolkit
     {
         public static void Apply(ARPlaneManager planeManager, RoomSurfaceMap map, List<Vector2> polygonBuffer)
         {
-            map.ClearPriors();
+            map.BeginPriors();
             foreach (var plane in planeManager.trackables)
             {
-                if (plane.subsumedBy != null || plane.alignment != PlaneAlignment.HorizontalUp)
+                // A plane with limited tracking is not where ARCore last saw it.
+                if (plane.subsumedBy != null || plane.alignment != PlaneAlignment.HorizontalUp
+                    || plane.trackingState != TrackingState.Tracking)
                 {
                     continue;
                 }
@@ -28,6 +30,8 @@ namespace Erasmus.ARToolkit
 
                 map.AddPrior(plane.transform.position.y, polygonBuffer);
             }
+
+            map.EndPriors();
         }
     }
 }

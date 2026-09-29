@@ -43,6 +43,9 @@ namespace Erasmus.ARToolkit
 
         public bool Visible => visible;
 
+        /// <summary>The room scan draws its own surfaces, so the planes are hidden whatever <see cref="Visible"/> says.</summary>
+        internal bool IsSuppressed => suppressed;
+
         /// <summary>Number of real surfaces found in the last update.</summary>
         public int SurfaceCount => grouping.GroupCount;
 
@@ -117,6 +120,7 @@ namespace Erasmus.ARToolkit
         {
             foreach (var plane in changes.added)
             {
+                ShowOnlyWhileTracked(plane);
                 ApplyVisibility(plane);
             }
 
@@ -162,6 +166,19 @@ namespace Erasmus.ARToolkit
                 GetMaterial(fillMaterials, baseFill, stencilBit, StencilOp.Replace));
             SetMaterial(plane.GetComponent<LineRenderer>(),
                 GetMaterial(edgeMaterials, baseEdge, stencilBit, StencilOp.Keep));
+        }
+
+        /// <summary>
+        /// A plane whose tracking is limited has an unreliable pose and would be drawn in a wrong place.
+        /// Plane prefabs made by older toolkit versions still show such planes.
+        /// </summary>
+        static void ShowOnlyWhileTracked(ARPlane plane)
+        {
+            var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
+            if (visualizer != null && visualizer.trackingStateVisibilityThreshold != TrackingState.Tracking)
+            {
+                visualizer.trackingStateVisibilityThreshold = TrackingState.Tracking;
+            }
         }
 
         void ApplyVisibility(ARPlane plane)

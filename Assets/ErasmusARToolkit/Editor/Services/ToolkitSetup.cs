@@ -13,11 +13,16 @@ namespace Erasmus.ARToolkit.Editor
             ToolkitAssets.GetOrCreatePanelSettings();
             ProjectConfigurator.ImportTmpEssentials();
             UrpRendererConfigurator.AddMissingFeatures();
+            UrpRendererConfigurator.MakeStencilSafe();
+            SceneUpgrader.UpgradeOpenScenes();
 
             var fixedCount = 0;
             if (ProjectConfigurator.ConfigureAndroid())
             {
                 fixedCount = Mathf.Max(0, ValidationFixer.FixAll(BuildTargetGroup.Android));
+
+                // After the validation fixes: they create the ARCore settings this changes.
+                ProjectConfigurator.SetDepthOptional();
             }
 
             Debug.Log($"[Erasmus AR Toolkit] Setup finished ({fixedCount} validation fix(es) applied). " +

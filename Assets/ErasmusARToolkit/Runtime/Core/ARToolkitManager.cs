@@ -3,6 +3,7 @@ using System.Collections;
 using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
 
 namespace Erasmus.ARToolkit
 {
@@ -14,6 +15,9 @@ namespace Erasmus.ARToolkit
     public sealed class ARToolkitManager : MonoBehaviour
     {
         const float StatusRefreshSeconds = 0.25f;
+
+        /// <summary>The screen stays on this long (seconds) after the last touch in AR mode.</summary>
+        const float KeepAwakeSeconds = 180f;
 
         [Header("Setup")]
         [SerializeField] ARToolkitConfig config;
@@ -41,6 +45,9 @@ namespace Erasmus.ARToolkit
         RoomScanner roomScanner;
         AROcclusionManager occlusionManager;
         float nextStatusRefresh;
+        float lastUserActivity;
+        bool keepingAwake;
+        bool themeChecked;
 
         public event Action<ToolkitMode> ModeChanged;
         public event Action<string> StatusChanged;
@@ -53,6 +60,11 @@ namespace Erasmus.ARToolkit
         public ARToolkitConfig Config => config;
         public ToolkitTheme Theme => theme;
         public Transform PlacedObjectsRoot => placedObjectsRoot;
+
+        /// <summary>The XR Origin object of the AR rig (null if the scene has no AR rig).</summary>
+        internal GameObject OriginObject => arOriginObject;
+
+        internal Camera ARCamera => arCamera;
 
         /// <summary>The PC webcam / phone camera shown in Desktop mode (null if the scene has none).</summary>
         public WebcamBackground CameraFeed => cameraFeed;
@@ -117,6 +129,7 @@ namespace Erasmus.ARToolkit
             Registry = new PlacedObjectRegistry(config.MaxPlacedObjects);
             PlanesVisible = config.ShowPlanesOnStart;
             FindDesktopParts();
+            EnsureOriginSettings();
             EnsureAnchorManager();
             EnsurePlaneSurfaces();
 
@@ -133,6 +146,7 @@ namespace Erasmus.ARToolkit
 
         void OnEnable()
         {
+            ARSession.stateChanged += OnSessionStateChanged;
             if (cameraFeed != null)
             {
                 cameraFeed.StateChanged += OnCameraFeedChanged;
@@ -141,6 +155,8 @@ namespace Erasmus.ARToolkit
 
         void OnDisable()
         {
+            ARSession.stateChanged -= OnSessionStateChanged;
+            SetKeepAwake(false);
             if (cameraFeed != null)
             {
                 cameraFeed.StateChanged -= OnCameraFeedChanged;
@@ -162,6 +178,28 @@ namespace Erasmus.ARToolkit
             if (cameraFeed == null)
             {
                 cameraFeed = desktopRigObject.GetComponentInChildren<WebcamBackground>(true);
+            }
+        }
+
+        /// <summary>
+        /// Phone AR has no floor-level tracking origin, so the XR Origin's camera height offset would only
+        /// shift every world height by a constant (1.1176 m in scenes made by older toolkit versions). The
+        /// camera image has to be drawn before the scene, because the toolkit's surface marks and depth
+        /// corrections are depth-tested against the real-world depth it writes.
+        /// </summary>
+        void EnsureOriginSettings()
+        {
+            var origin = arOriginObject != null ? arOriginObject.GetComponent<XROrigin>() : null;
+            if (origin != null && origin.CameraYOffset != 0f)
+            {
+                origin.CameraYOffset = 0f;
+            }
+
+            var cameraManager = arCamera != null ? arCamera.GetComponent<ARCameraManager>() : null;
+            if (cameraManager != null
+                && cameraManager.requestedBackgroundRenderingMode != CameraBackgroundRenderingMode.BeforeOpaques)
+            {
+                cameraManager.requestedBackgroundRenderingMode = CameraBackgroundRenderingMode.BeforeOpaques;
             }
         }
 
@@ -209,8 +247,7 @@ namespace Erasmus.ARToolkit
                 roomScanner = planeManager.gameObject.AddComponent<RoomScanner>();
             }
 
-            roomScanner.Initialize(arCamera, theme != null ? theme.OccluderMaterial : null,
-                theme != null ? theme.SurfaceDepthMaterial : null);
+            roomScanner.Initialize(arCamera, theme);
             roomScanner.SetVisible(PlanesVisible);
         }
 
@@ -262,7 +299,45 @@ namespace Erasmus.ARToolkit
             {
                 nextStatusRefresh = Time.unscaledTime + StatusRefreshSeconds;
                 RefreshStatus();
+                SetKeepAwake(Mode == ToolkitMode.AR
+                             && (IsScanning || Time.unscaledTime - lastUserActivity < KeepAwakeSeconds));
             }
+        }
+
+        /// <summary>The phone is kept from dimming and locking right now.</summary>
+        internal bool KeepsScreenOn => keepingAwake;
+
+        /// <summary>Called on every touch: the screen stays on while the app is in use.</summary>
+        internal void NoteUserActivity()
+        {
+            lastUserActivity = Time.unscaledTime;
+        }
+
+        /// <summary>
+        /// Keeps the phone from dimming and locking during a room scan or while objects are placed (the AR
+        /// session would pause). An app left alone goes back to the phone's own screen timeout.
+        /// </summary>
+        void SetKeepAwake(bool value)
+        {
+            if (keepingAwake == value)
+            {
+                return;
+            }
+
+            keepingAwake = value;
+            Screen.sleepTimeout = value ? SleepTimeout.NeverSleep : SleepTimeout.SystemSetting;
+        }
+
+        void OnSessionStateChanged(ARSessionStateChangedEventArgs args)
+        {
+            if (Mode != ToolkitMode.AR)
+            {
+                return;
+            }
+
+            var reason = args.state == ARSessionState.SessionTracking ? string.Empty : ", reason: " + ARSession.notTrackingReason;
+            Debug.LogFormat(LogType.Log, LogOption.NoStacktrace, this,
+                "[Erasmus AR Toolkit] AR session: {0}{1}", args.state, reason);
         }
 
         /// <summary>Shows or hides the AR planes (AR mode) or the virtual grid (Desktop mode).</summary>
@@ -323,6 +398,12 @@ namespace Erasmus.ARToolkit
             SetActive(arSessionObject, isAR);
             SetActive(arOriginObject, isAR);
             SetActive(desktopRigObject, !isAR);
+            if (isAR)
+            {
+                lastUserActivity = Time.unscaledTime;
+                CheckRoomScanAssets();
+            }
+
             if (isAR && occlusionManager != null && occlusionManager.enabled)
             {
                 StartCoroutine(RealWorldOcclusion.TurnOffIfUnsupported(occlusionManager));
@@ -355,6 +436,30 @@ namespace Erasmus.ARToolkit
             {
                 Status = message;
                 StatusChanged?.Invoke(message);
+            }
+        }
+
+        /// <summary>
+        /// A theme without the room scan materials means a build without their shaders: no table occluders
+        /// and no steady surface depth. Said once, where it matters (AR mode; an error on the phone).
+        /// </summary>
+        void CheckRoomScanAssets()
+        {
+            if (themeChecked || (theme != null && theme.HasRoomScanAssets))
+            {
+                return;
+            }
+
+            themeChecked = true;
+            const string message = "[Erasmus AR Toolkit] The theme has no room scan materials. " +
+                                   "Run Tools > Erasmus AR Toolkit > Run Setup and build again.";
+            if (Application.isEditor)
+            {
+                Debug.LogWarning(message, this);
+            }
+            else
+            {
+                Debug.LogError(message, this);
             }
         }
 
@@ -408,6 +513,11 @@ namespace Erasmus.ARToolkit
         internal void SetConfig(ARToolkitConfig toolkitConfig)
         {
             config = toolkitConfig;
+        }
+
+        internal void SetTheme(ToolkitTheme toolkitTheme)
+        {
+            theme = toolkitTheme;
         }
     }
 }

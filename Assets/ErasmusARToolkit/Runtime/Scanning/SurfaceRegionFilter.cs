@@ -3,6 +3,34 @@ using System.Collections.Generic;
 
 namespace Erasmus.ARToolkit
 {
+    /// <summary>How <see cref="SurfaceRegionFilter"/> decides which cells are drawn.</summary>
+    public readonly struct SurfaceFilterSettings
+    {
+        public SurfaceFilterSettings(float minRegionArea, float maxHoleArea, bool hysteresis)
+        {
+            MinRegionArea = minRegionArea;
+            MaxHoleArea = maxHoleArea;
+            Hysteresis = hysteresis;
+        }
+
+        /// <summary>Smaller pieces (square meters) are noise, not a surface to place things on.</summary>
+        public float MinRegionArea { get; }
+
+        /// <summary>Unseen holes up to this size (square meters) inside a surface are filled.</summary>
+        public float MaxHoleArea { get; }
+
+        /// <summary>A cell that was drawn stays until its evidence is clearly gone (no flickering edges).</summary>
+        public bool Hysteresis { get; }
+
+        /// <summary>Every redraw decides anew, as <see cref="SurfaceRegionFilter.Apply(SurfaceGrid)"/> does.</summary>
+        public static readonly SurfaceFilterSettings Legacy = new SurfaceFilterSettings(
+            SurfaceRegionFilter.MinRegionArea, SurfaceRegionFilter.MaxHoleArea, false);
+
+        /// <summary>The room scan: steady edges.</summary>
+        public static readonly SurfaceFilterSettings Scan = new SurfaceFilterSettings(
+            SurfaceRegionFilter.MinRegionArea, SurfaceRegionFilter.MaxHoleArea, true);
+    }
+
     /// <summary>
     /// Decides which cells of a <see cref="SurfaceGrid"/> are drawn. Starts from the occupied cells, then
     /// <list type="bullet">
@@ -25,8 +53,15 @@ namespace Erasmus.ARToolkit
         readonly List<int> region = new List<int>();
         bool[] visited = Array.Empty<bool>();
         int[] queue = Array.Empty<int>();
+        float minRegionArea = MinRegionArea;
+        float maxHoleArea = MaxHoleArea;
 
         public void Apply(SurfaceGrid grid)
+        {
+            Apply(grid, SurfaceFilterSettings.Legacy);
+        }
+
+        public void Apply(SurfaceGrid grid, in SurfaceFilterSettings settings)
         {
             var count = grid.CellCount;
             if (visited.Length < count)
@@ -37,9 +72,15 @@ namespace Erasmus.ARToolkit
 
             for (var i = 0; i < count; i++)
             {
-                grid.SetShown(i, grid.StateAt(i) == CellState.Occupied);
+                var keep = settings.Hysteresis
+                    ? SurfaceEvidence.Keeps(grid.LogOddsAt(i), grid.HasPriorAt(i), grid.PriorWeight, grid.WasKept(i))
+                    : grid.StateAt(i) == CellState.Occupied;
+                grid.SetKept(i, keep);
+                grid.SetShown(i, keep);
             }
 
+            minRegionArea = settings.MinRegionArea;
+            maxHoleArea = settings.MaxHoleArea;
             RemoveSmallRegions(grid);
             FillSmallHoles(grid);
         }
@@ -55,7 +96,7 @@ namespace Erasmus.ARToolkit
                 }
 
                 CollectRegion(grid, start, true);
-                if (region.Count * CellArea < MinRegionArea)
+                if (region.Count * CellArea < minRegionArea)
                 {
                     foreach (var index in region)
                     {
@@ -90,7 +131,7 @@ namespace Erasmus.ARToolkit
                 }
 
                 CollectRegion(grid, start, false);
-                if (region.Count * CellArea > MaxHoleArea)
+                if (region.Count * CellArea > maxHoleArea)
                 {
                     continue;
                 }

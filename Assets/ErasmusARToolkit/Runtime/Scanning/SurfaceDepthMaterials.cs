@@ -11,11 +11,14 @@ namespace Erasmus.ARToolkit
     /// </summary>
     internal sealed class SurfaceDepthMaterials
     {
-        /// <summary>Real points up to this high (meters) above a scanned surface count as that surface (depth noise).</summary>
-        public const float PullHeight = 0.15f;
+        /// <summary>
+        /// Real points up to this high (meters) above a scanned surface count as that surface (depth noise,
+        /// about twice the noise at 2 m). Higher real things (chair feet, bags) keep their measured depth.
+        /// </summary>
+        public const float PullHeight = 0.06f;
 
         /// <summary>Limit of the pull toward the camera, as a fraction of the distance.</summary>
-        public const float MaxPull = 0.35f;
+        public const float MaxPull = 0.20f;
 
         /// <summary>The written surface depth lies this fraction of the distance farther, so objects on it never flicker.</summary>
         public const float PushBack = 0.004f;
@@ -39,6 +42,24 @@ namespace Erasmus.ARToolkit
         }
 
         public bool IsAvailable => source != null;
+
+        /// <summary>Slots in use right now.</summary>
+        public int UsedCount
+        {
+            get
+            {
+                var count = 0;
+                for (var slot = 0; slot < used.Length; slot++)
+                {
+                    if (used[slot])
+                    {
+                        count++;
+                    }
+                }
+
+                return count;
+            }
+        }
 
         /// <summary>A free slot, or -1 when all are taken (or there is no material).</summary>
         public int Acquire()

@@ -3,10 +3,12 @@
     "rootNamespace": "Erasmus.ARToolkit.Tests",
     "references": [
         "Erasmus.ARToolkit.Runtime",
+        "Erasmus.ARToolkit.Tests.Support",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
         "Unity.XR.ARFoundation",
         "Unity.XR.ARSubsystems",
+        "Unity.XR.CoreUtils",
         "UnityEngine.UI",
         "Unity.TextMeshPro"
     ],

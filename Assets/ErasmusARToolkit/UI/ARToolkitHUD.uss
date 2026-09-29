@@ -70,6 +70,18 @@
     font-size: 28px;
 }
 
+/* What the room scan measures, in small print under the progress line */
+.scan-debug {
+    margin: 8px 24px 0 24px;
+    padding: 8px 16px;
+    background-color: var(--panel-color);
+    border-radius: 12px;
+    color: var(--text-color);
+    font-size: 20px;
+    white-space: normal;
+    -unity-text-align: upper-left;
+}
+
 /* The scan button turns yellow while scanning (it then reads "Finish Scan"). */
 .scan-button.scanning,
 .scan-button.scanning:hover {

@@ -66,7 +66,9 @@ namespace Erasmus.ARToolkit
                 return false;
             }
 
-            frame.Reset(camera.transform.position, false);
+            var cameraTransform = camera.transform;
+            frame.Reset(cameraTransform.position, false);
+            frame.Rotation = cameraTransform.rotation;
             foreach (var cloud in pointClouds.trackables)
             {
                 var positions = cloud.positions;

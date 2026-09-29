@@ -35,7 +35,8 @@ namespace Erasmus.ARToolkit
         public const string Checking = "Checking AR support...";
         public const string MovePhone = "Move your phone slowly to start tracking.";
         public const string ScanSurfaces = "Point the camera at the floor or a table and move slowly, or tap Scan Room.";
-        public const string RoomScan = "Room scan: walk slowly and look at the floor and every table top. Tap Finish Scan when done.";
+        public const string RoomScan = "Room scan: first point the phone at the floor near your feet, then walk slowly " +
+                                       "and look at every table top. Tap Finish Scan when done.";
         public const string TapToPlace = "Tap a highlighted surface to place the selected object.";
         public const string TouchManipulate = "Drag to move, pinch to scale, twist to rotate. Tap an object to edit it.";
         public const string LookForImages = "Point the camera at one of the image targets.";

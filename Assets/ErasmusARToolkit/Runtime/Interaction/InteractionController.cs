@@ -128,6 +128,7 @@ namespace Erasmus.ARToolkit
 
         void BeginGesture(Vector2 position)
         {
+            manager.NoteUserActivity();
             gestureActive = true;
             gestureUsedTwoFingers = false;
             dragging = false;

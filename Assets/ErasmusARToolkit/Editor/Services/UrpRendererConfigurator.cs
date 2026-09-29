@@ -53,7 +53,162 @@ namespace Erasmus.ARToolkit.Editor
 #endif
         }
 
+        /// <summary>
+        /// The renderers of the Android quality levels keep what the toolkit's surface shaders rely on:
+        /// forward rendering (deferred uses the stencil buffer itself), no depth priming (the camera image
+        /// writes the real-world depth after a depth prepass would have run, so primed objects disappear)
+        /// and a depth buffer that has a stencil part.
+        /// </summary>
+        public static bool IsStencilSafe
+        {
+            get
+            {
 #if ERASMUS_HAS_URP
+                return FindAndroidRenderers().All(IsStencilSafeRenderer);
+#else
+                return true;
+#endif
+            }
+        }
+
+        /// <summary>Changes the renderers that need it and returns how many were changed.</summary>
+        public static int MakeStencilSafe()
+        {
+#if ERASMUS_HAS_URP
+            var changed = 0;
+            foreach (var renderer in FindAndroidRenderers())
+            {
+                if (IsStencilSafeRenderer(renderer))
+                {
+                    continue;
+                }
+
+                if (!IsForward(renderer.renderingMode))
+                {
+                    renderer.renderingMode = RenderingMode.Forward;
+                }
+
+                renderer.depthPrimingMode = DepthPrimingMode.Disabled;
+                if (!HasStencil(renderer.depthAttachmentFormat))
+                {
+                    renderer.depthAttachmentFormat = DepthFormat.Default;
+                }
+
+                EditorUtility.SetDirty(renderer);
+                changed++;
+                Debug.Log($"[Erasmus AR Toolkit] URP renderer '{renderer.name}' now uses forward rendering without " +
+                          "depth priming and a depth buffer with stencil, as AR occlusion needs.", renderer);
+            }
+
+            if (changed > 0)
+            {
+                AssetDatabase.SaveAssets();
+            }
+
+            return changed;
+#else
+            return 0;
+#endif
+        }
+
+        /// <summary>
+        /// The camera image is not HDR, so HDR rendering only costs the phone an extra full-screen copy.
+        /// Frame pacing spreads the frames evenly (no stutter at 30 frames per second).
+        /// </summary>
+        public static bool IsPhoneRenderingTuned
+        {
+            get
+            {
+#if ERASMUS_HAS_URP
+                return PlayerSettings.Android.optimizedFramePacing && FindAndroidAssets().All(asset => !asset.supportsHDR);
+#else
+                return true;
+#endif
+            }
+        }
+
+        public static void TunePhoneRendering()
+        {
+#if ERASMUS_HAS_URP
+            PlayerSettings.Android.optimizedFramePacing = true;
+            foreach (var asset in FindAndroidAssets())
+            {
+                if (asset.supportsHDR)
+                {
+                    asset.supportsHDR = false;
+                    EditorUtility.SetDirty(asset);
+                    Debug.Log($"[Erasmus AR Toolkit] HDR is now off in the URP asset '{asset.name}' (used on Android).", asset);
+                }
+            }
+
+            AssetDatabase.SaveAssets();
+#endif
+        }
+
+#if ERASMUS_HAS_URP
+        const string AndroidPlatform = "Android";
+
+        static bool IsForward(RenderingMode mode)
+        {
+            return mode == RenderingMode.Forward || mode == RenderingMode.ForwardPlus;
+        }
+
+        static bool HasStencil(DepthFormat format)
+        {
+            return format == DepthFormat.Default || format == DepthFormat.Depth_16_Stencil_8
+                   || format == DepthFormat.Depth_24_Stencil_8 || format == DepthFormat.Depth_32_Stencil_8;
+        }
+
+        static bool IsStencilSafeRenderer(UniversalRendererData renderer)
+        {
+            return IsForward(renderer.renderingMode) && renderer.depthPrimingMode == DepthPrimingMode.Disabled
+                   && HasStencil(renderer.depthAttachmentFormat);
+        }
+
+        /// <summary>The URP assets of the quality levels that are switched on for Android.</summary>
+        static IEnumerable<UniversalRenderPipelineAsset> FindAndroidAssets()
+        {
+            var assets = new HashSet<UniversalRenderPipelineAsset>();
+            for (var i = 0; i < QualitySettings.names.Length; i++)
+            {
+                if (!QualitySettings.IsPlatformIncluded(AndroidPlatform, i))
+                {
+                    continue;
+                }
+
+                // A quality level without its own asset uses the one of the graphics settings.
+                var levelAsset = QualitySettings.GetRenderPipelineAssetAt(i);
+                if (levelAsset == null)
+                {
+                    levelAsset = GraphicsSettings.defaultRenderPipeline;
+                }
+
+                if (levelAsset is UniversalRenderPipelineAsset asset)
+                {
+                    assets.Add(asset);
+                }
+            }
+
+            return assets;
+        }
+
+        static IEnumerable<UniversalRendererData> FindAndroidRenderers()
+        {
+            var renderers = new HashSet<UniversalRendererData>();
+            foreach (var asset in FindAndroidAssets())
+            {
+                foreach (var renderer in asset.rendererDataList)
+                {
+                    if (renderer is UniversalRendererData universal)
+                    {
+                        renderers.Add(universal);
+                    }
+                }
+            }
+
+            return renderers;
+        }
+
         static bool HasRequiredFeatures(ScriptableRendererData renderer)
         {
             return renderer.rendererFeatures.Any(f => f is ARBackgroundRendererFeature)

@@ -18,11 +18,16 @@
         <e:StatusRow name="row-arcore-enabled" text="ARCore enabled in XR Plug-in Management" action-text="Configure Android" />
         <e:StatusRow name="row-android-player" text="IL2CPP, ARM64, Android API 24 or newer" action-text="Configure Android" />
         <e:StatusRow name="row-urp-features" text="AR camera image enabled on URP renderers" action-text="Add Features" />
+        <e:StatusRow name="row-urp-stencil" text="URP renderers on Android suit AR occlusion (forward, no depth priming, stencil)" action-text="Fix" />
+        <e:StatusRow name="row-depth-optional" text="ARCore Depth is optional (phones without depth can install the app)" action-text="Make Optional" />
+        <e:StatusRow name="row-phone-rendering" text="Phone rendering tuned (HDR off, even frame pacing)" action-text="Tune" />
         <e:StatusRow name="row-validation" text="XR Project Validation" action-text="Fix All" />
         <ui:Button name="open-validation" class="link-button" text="Show details in Project Validation" />
 
         <ui:Label class="section-title" text="Toolkit" />
         <e:StatusRow name="row-config" text="Toolkit config asset" action-text="Create Config" />
+        <e:StatusRow name="row-scan-assets" text="Room scan materials and shaders in the theme" action-text="Add" />
+        <e:StatusRow name="row-scene-upgrade" text="Open scenes use the current AR rig settings" action-text="Upgrade Scenes" />
 
         <ui:Label class="section-title" text="App Identity" />
         <ui:TextField name="product-name" label="Product Name" is-delayed="true" />

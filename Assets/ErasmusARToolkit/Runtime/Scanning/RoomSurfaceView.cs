@@ -14,7 +14,7 @@ namespace Erasmus.ARToolkit
     /// </list>
     /// Meshes are in world space under one root object at the world origin.
     /// </summary>
-    internal sealed class RoomSurfaceView
+    internal sealed class RoomSurfaceView : IRoomModelSink
     {
         readonly Material fillMaterial;
         readonly Material outlineMaterial;
@@ -35,7 +35,12 @@ namespace Erasmus.ARToolkit
 
         public bool HasOccluderMaterial => occluderMaterial != null;
 
+        public bool WantsOccluders => occluderMaterial != null;
+
         public int LevelCount => views.Count;
+
+        /// <summary>Surfaces that have a depth correction right now.</summary>
+        public int DepthSlotsUsed => depthMaterials.UsedCount;
 
         public void Show(int levelId, SurfaceMeshData data)
         {

@@ -90,6 +90,29 @@ namespace Erasmus.ARToolkit
         }
 
         /// <summary>
+        /// True if the surface spanned by two tangent vectors faces up: a floor or a table top, seen from
+        /// above. A camera sees the side of a surface that faces it, so the normal is the one that points
+        /// toward the camera. The underside of a table, seen from below (or mirrored in a shiny floor),
+        /// faces down. <paramref name="minCosine"/> is the cosine of the largest allowed tilt.
+        /// </summary>
+        public static bool IsUpFacing(Vector3 tangentA, Vector3 tangentB, Vector3 toCamera, float minCosine)
+        {
+            var normal = Vector3.Cross(tangentA, tangentB);
+            var length = normal.magnitude;
+            if (length <= 1e-8f)
+            {
+                return false;
+            }
+
+            if (Vector3.Dot(normal, toCamera) < 0f)
+            {
+                normal = -normal;
+            }
+
+            return normal.y >= minCosine * length;
+        }
+
+        /// <summary>
         /// True if the surface spanned by two tangent vectors faces up or down (a floor or table top).
         /// <paramref name="minCosine"/> is the cosine of the largest allowed tilt.
         /// </summary>

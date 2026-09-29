@@ -17,6 +17,14 @@ namespace Erasmus.ARToolkit.Editor
         const string XRSettingsPath = XRSettingsFolder + "/XRGeneralSettingsPerBuildTarget.asset";
         const int ArCoreMinSdk = 24;
 
+        // The ARCore settings live in the ARCore package's editor assembly, which the toolkit does not
+        // refer to (it has to compile before ARCore is installed), so they are reached by name.
+        const string ArCoreSettingsKey = "UnityEditor.XR.ARCore.ARCoreSettings";
+        const string ArCoreSettingsType = ArCoreSettingsKey + ", Unity.XR.ARCore.Editor";
+        const string ArCoreSettingsPath = XRSettingsFolder + "/Settings/ARCoreSettings.asset";
+        const string ArCoreDepthProperty = "m_Depth";
+        const int Optional = 1;
+
         public static bool IsAndroidModuleInstalled =>
             BuildPipeline.IsBuildTargetSupported(BuildTargetGroup.Android, BuildTarget.Android);
 
@@ -93,6 +101,68 @@ namespace Erasmus.ARToolkit.Editor
                 OpenXRSettings();
                 return false;
             }
+        }
+
+        /// <summary>
+        /// ARCore Depth is optional: phones without depth can install the app. They get no real-world
+        /// occlusion and scan rooms with tracking points.
+        /// </summary>
+        public static bool IsDepthOptional
+        {
+            get
+            {
+                var depth = FindArCoreSettings(false)?.FindProperty(ArCoreDepthProperty);
+                return depth != null && depth.intValue == Optional;
+            }
+        }
+
+        /// <summary>Returns false when the ARCore settings cannot be found or made (ARCore not installed).</summary>
+        public static bool SetDepthOptional()
+        {
+            var settings = FindArCoreSettings(true);
+            var depth = settings?.FindProperty(ArCoreDepthProperty);
+            if (depth == null)
+            {
+                return false;
+            }
+
+            if (depth.intValue != Optional)
+            {
+                depth.intValue = Optional;
+                settings.ApplyModifiedPropertiesWithoutUndo();
+                EditorUtility.SetDirty(settings.targetObject);
+                AssetDatabase.SaveAssets();
+                Debug.Log("[Erasmus AR Toolkit] ARCore Depth is now optional: phones without depth can install " +
+                          "the app. They scan rooms with tracking points and have no real-world occlusion.");
+            }
+
+            return true;
+        }
+
+        static SerializedObject FindArCoreSettings(bool create)
+        {
+            if (EditorBuildSettings.TryGetConfigObject(ArCoreSettingsKey, out ScriptableObject settings)
+                && settings != null)
+            {
+                return new SerializedObject(settings);
+            }
+
+            var type = create ? Type.GetType(ArCoreSettingsType) : null;
+            if (type == null)
+            {
+                return null;
+            }
+
+            settings = AssetDatabase.LoadAssetAtPath<ScriptableObject>(ArCoreSettingsPath);
+            if (settings == null)
+            {
+                ToolkitAssets.EnsureFolder(XRSettingsFolder + "/Settings");
+                settings = ScriptableObject.CreateInstance(type);
+                AssetDatabase.CreateAsset(settings, ArCoreSettingsPath);
+            }
+
+            EditorBuildSettings.AddConfigObject(ArCoreSettingsKey, settings, true);
+            return new SerializedObject(settings);
         }
 
         public static void OpenXRSettings()

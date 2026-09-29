@@ -19,9 +19,14 @@ namespace Erasmus.ARToolkit.Editor
         readonly StatusRow arCoreEnabledRow;
         readonly StatusRow androidPlayerRow;
         readonly StatusRow urpFeaturesRow;
+        readonly StatusRow urpStencilRow;
+        readonly StatusRow depthOptionalRow;
+        readonly StatusRow phoneRenderingRow;
         readonly StatusRow validationRow;
         readonly Button openValidationButton;
         readonly StatusRow configRow;
+        readonly StatusRow scanAssetsRow;
+        readonly StatusRow sceneUpgradeRow;
         readonly TextField productName;
         readonly TextField companyName;
         readonly TextField packageName;
@@ -39,9 +44,14 @@ namespace Erasmus.ARToolkit.Editor
             arCoreEnabledRow = EditorUi.Q<StatusRow>(Root, "row-arcore-enabled");
             androidPlayerRow = EditorUi.Q<StatusRow>(Root, "row-android-player");
             urpFeaturesRow = EditorUi.Q<StatusRow>(Root, "row-urp-features");
+            urpStencilRow = EditorUi.Q<StatusRow>(Root, "row-urp-stencil");
+            depthOptionalRow = EditorUi.Q<StatusRow>(Root, "row-depth-optional");
+            phoneRenderingRow = EditorUi.Q<StatusRow>(Root, "row-phone-rendering");
             validationRow = EditorUi.Q<StatusRow>(Root, "row-validation");
             openValidationButton = EditorUi.Q<Button>(Root, "open-validation");
             configRow = EditorUi.Q<StatusRow>(Root, "row-config");
+            scanAssetsRow = EditorUi.Q<StatusRow>(Root, "row-scan-assets");
+            sceneUpgradeRow = EditorUi.Q<StatusRow>(Root, "row-scene-upgrade");
             productName = EditorUi.Q<TextField>(Root, "product-name");
             companyName = EditorUi.Q<TextField>(Root, "company-name");
             packageName = EditorUi.Q<TextField>(Root, "package-name");
@@ -70,9 +80,18 @@ namespace Erasmus.ARToolkit.Editor
             arCoreEnabledRow.SetState(arCoreEnabled, Do(() => ProjectConfigurator.ConfigureAndroid()));
             androidPlayerRow.SetState(ProjectConfigurator.IsAndroidPlayerReady, Do(() => ProjectConfigurator.ConfigureAndroid()));
             urpFeaturesRow.SetState(UrpRendererConfigurator.IsConfigured, Do(() => UrpRendererConfigurator.AddMissingFeatures()));
+            urpStencilRow.SetState(UrpRendererConfigurator.IsStencilSafe, Do(() => UrpRendererConfigurator.MakeStencilSafe()));
+            depthOptionalRow.SetState(ProjectConfigurator.IsDepthOptional,
+                arCoreEnabled ? Do(() => ProjectConfigurator.SetDepthOptional()) : null);
+            phoneRenderingRow.SetState(UrpRendererConfigurator.IsPhoneRenderingTuned,
+                Do(UrpRendererConfigurator.TunePhoneRendering));
             RefreshValidation(arCoreEnabled);
             configRow.SetState(ToolkitAssets.FindConfig() != null,
                 Do(() => Selection.activeObject = ToolkitAssets.GetOrCreateConfig()));
+            scanAssetsRow.SetState(ToolkitAssets.HasRoomScanAssets(),
+                Do(() => ToolkitAssets.EnsureRoomScanAssets(ToolkitAssets.GetOrCreateTheme())));
+            sceneUpgradeRow.SetState(!SceneUpgrader.AnyOpenSceneNeedsUpgrade(),
+                Do(() => SceneUpgrader.UpgradeOpenScenes()));
 
             productName.SetValueWithoutNotify(PlayerSettings.productName);
             companyName.SetValueWithoutNotify(PlayerSettings.companyName);

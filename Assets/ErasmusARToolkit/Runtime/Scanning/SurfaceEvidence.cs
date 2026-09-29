@@ -31,7 +31,34 @@ namespace Erasmus.ARToolkit
         public const float SparseHitWeight = 0.1f;
 
         public const float MissWeight = 0.15f;
+
+        /// <summary>
+        /// Head start of a cell inside a plane ARCore detected, when nothing better is known: on phones
+        /// without depth, and for the floor. Above <see cref="OccupiedThreshold"/>: the cell shows at once.
+        /// </summary>
         public const float PriorWeight = 0.5f;
+
+        /// <summary>
+        /// Head start of a cell of a raised surface on phones with depth. Below
+        /// <see cref="OccupiedThreshold"/>: ARCore planes are hulls that reach past table edges, so a cell
+        /// shows after one frame of depth hits, and one frame that looks through it removes it.
+        /// </summary>
+        public const float PrecisePriorWeight = 0.25f;
+
+        /// <summary>
+        /// A cell that is shown stays shown until its score falls below this: one frame of doubt does not
+        /// make an edge flicker.
+        /// </summary>
+        public const float HideThreshold = 0.12f;
+
+        /// <summary>From this value on a cell was seen as a surface by depth itself (two frames of hits).</summary>
+        public const float ConfirmedLogOdds = 0.4f;
+
+        /// <summary>
+        /// Weight of a depth point that was seen through a confirmed floor cell: a reflection in a shiny
+        /// floor. It says little about where the point is, but that the floor is there.
+        /// </summary>
+        public const float ReflectionHitWeight = 0.1f;
         public const float MinLogOdds = -1.2f;
         public const float MaxLogOdds = 1.6f;
 
@@ -40,17 +67,37 @@ namespace Erasmus.ARToolkit
 
         public static float Score(float logOdds, bool prior)
         {
-            return logOdds + (prior ? PriorWeight : 0f);
+            return Score(logOdds, prior, PriorWeight);
+        }
+
+        public static float Score(float logOdds, bool prior, float priorWeight)
+        {
+            return logOdds + (prior ? priorWeight : 0f);
         }
 
         public static CellState Classify(float logOdds, bool prior)
         {
-            if (Score(logOdds, prior) > OccupiedThreshold)
+            return Classify(logOdds, prior, PriorWeight);
+        }
+
+        public static CellState Classify(float logOdds, bool prior, float priorWeight)
+        {
+            if (Score(logOdds, prior, priorWeight) > OccupiedThreshold)
             {
                 return CellState.Occupied;
             }
 
             return logOdds < 0f ? CellState.Carved : CellState.Unknown;
+        }
+
+        /// <summary>
+        /// A shown cell stays shown while it has more hits than misses and its score is above
+        /// <see cref="HideThreshold"/>; a hidden cell needs <see cref="OccupiedThreshold"/> to show.
+        /// </summary>
+        public static bool Keeps(float logOdds, bool prior, float priorWeight, bool wasKept)
+        {
+            var score = Score(logOdds, prior, priorWeight);
+            return score > OccupiedThreshold || (wasKept && logOdds > 0f && score > HideThreshold);
         }
 
         public static float AddHit(float logOdds, float weight)
@@ -60,7 +107,13 @@ namespace Erasmus.ARToolkit
 
         public static float AddMiss(float logOdds)
         {
-            return Mathf.Max(logOdds - MissWeight, MinLogOdds);
+            return AddMiss(logOdds, 1f);
+        }
+
+        /// <param name="frameWeight">How much the frame counts (see <see cref="ScanFrame.Weight"/>).</param>
+        public static float AddMiss(float logOdds, float frameWeight)
+        {
+            return Mathf.Max(logOdds - MissWeight * frameWeight, MinLogOdds);
         }
     }
 }

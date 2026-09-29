@@ -24,6 +24,12 @@ namespace Erasmus.ARToolkit
         [SerializeField, Tooltip("Depth-only material that steadies noisy real-world depth on scanned surfaces (room scan).")]
         Material surfaceDepthMaterial;
 
+        [Header("Shaders")]
+        [SerializeField, Tooltip("Referenced here so the room scan shaders are part of every build.")]
+        Shader occluderShader;
+        [SerializeField, Tooltip("Referenced here so the room scan shaders are part of every build.")]
+        Shader surfaceDepthShader;
+
         [Header("Info Labels")]
         [SerializeField, Tooltip("TextMeshPro font for info labels. Empty uses the TMP default font.")]
         TMP_FontAsset labelFont;
@@ -41,6 +47,8 @@ namespace Erasmus.ARToolkit
         public Material LabelBackgroundMaterial => labelBackgroundMaterial;
         public Material OccluderMaterial => occluderMaterial;
         public Material SurfaceDepthMaterial => surfaceDepthMaterial;
+        public Shader OccluderShader => occluderShader;
+        public Shader SurfaceDepthShader => surfaceDepthShader;
         public TMP_FontAsset LabelFont => labelFont;
         public Color LabelTitleColor => labelTitleColor;
         public Color LabelTextColor => labelTextColor;
@@ -51,6 +59,14 @@ namespace Erasmus.ARToolkit
         public bool HasAllMaterials =>
             groundMaterial != null && highlightMaterial != null && imageTargetMaterial != null
             && labelBackgroundMaterial != null;
+
+        /// <summary>
+        /// The room scan's depth-only materials and their shaders are assigned. Without them a build has no
+        /// table occluders and no steady surface depth (Run Setup adds them).
+        /// </summary>
+        public bool HasRoomScanAssets =>
+            occluderMaterial != null && surfaceDepthMaterial != null
+            && occluderShader != null && surfaceDepthShader != null;
 
         internal void SetMaterials(Material ground, Material highlight, Material imageTarget, Material labelBackground)
         {
@@ -68,6 +84,12 @@ namespace Erasmus.ARToolkit
         internal void SetSurfaceDepthMaterial(Material surfaceDepth)
         {
             surfaceDepthMaterial = surfaceDepth;
+        }
+
+        internal void SetRoomScanShaders(Shader occluder, Shader surfaceDepth)
+        {
+            occluderShader = occluder;
+            surfaceDepthShader = surfaceDepth;
         }
     }
 }

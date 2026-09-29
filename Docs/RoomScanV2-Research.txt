@@ -1,0 +1,537 @@
+
+=================== RESEARCH arfoundation-arcore-api ===================
+
+--- RECOMMENDATIONS ---
+
+* [high impact / small effort] Make the ARCore floor plane the height reference; let depth only refine it
+  Take the floor level height from the largest ARCore PlaneAlignment.HorizontalUp plane (plane.transform.position.y, re-read on every trackablesChanged.updated). ARCore fits planes to feature points, and on tiled floors those sit on grout and texture, i.e. on the real surface. In SurfaceLevel, allow depth samples to move the height only within about +/-2 cm of that plane. Use high-confidence samples only (>= 128, ideally >= 180 for the height estimate) and a robust upper estimator (for example the 60-70th percentile of samples in the window, not the histogram peak). Reflections on glossy tiles produce points below the floor, so the lower tail must not pull the level down. When there is no plane yet, fall back to the current histogram.
+  RISKS: When the ARCore plane is itself wrong (very textureless floor), the fallback path must still work. Tables are affected too if the same rule applies, so use the plane-authority rule for the floor level only, or for levels that have a matching plane.
+
+* [high impact / medium effort] Keep the scan in session space and follow ARCore pose corrections
+  Parent the 'Room Surfaces (scanned)' root under XROrigin.TrackablesParent, or better, under an anchor attached to the floor plane (ARAnchorManager.AttachAnchor(floorPlane, pose)). Store cell coordinates relative to that parent instead of world space. Subscribe to XROrigin.TrackablesParentTransformChanged and to ARSession.stateChanged (tracking lost, then re-tracked). After re-localisation, either re-seed level heights from the current plane poses or reset the scan. This follows AR Foundation's own guidance that objects not parented to a trackable can jump when the session-to-world mapping changes.
+  RISKS: Plane-attached anchors move whenever ARCore refines the plane, so the grid moves with it, which is the intended behaviour. The 2.5D grid assumes a gravity-aligned parent, so use only the anchor's position and yaw, not tiny pitch/roll changes.
+
+* [high impact / medium effort] Custom soft occlusion for placed content, plus a floor-contact rule
+  The phone path (ARCameraBackground) writes a hard depth value per pixel from roughly 160x120 depth, which causes the torn box bottom (S2). Option A: set requestedOcclusionPreferenceMode = NoOcclusion so the background stops writing depth (the provider disables ARCORE_ENVIRONMENT_DEPTH_ENABLED; TryGetEnvironmentDepthTexture still works). Then, each frame, SetGlobalTexture('_EnvironmentDepth') and SetGlobalMatrix('_UnityDisplayTransform', frame.displayMatrix) yourself. In the toolkit's URP object shaders, compute depthUV = mul(float4(screenUV,1,0), M).xy, sample depth in metres, compare with the fragment's view-space z, and fade alpha over Google's recommended tolerance band. Skip occlusion for fragments within about 3-5 cm above the scanned floor (contact zone), so noisy floor depth never cuts objects standing on it. Option B: keep hard background occlusion but make sure the existing Surface Depth correction always covers placed objects' footprints. That only works once the floor height is fixed (first recommendation).
+  RISKS: Every occludable material must use the new shader. Handle both Vulkan (reverse-Z) and GLES paths. Screen UV y-flip and the display matrix convention must be checked on device (the project's DepthImageMapping self-check can be reused). ARShaderOcclusion must NOT be used on ARCore; it is headset-only and would disable background occlusion.
+
+* [medium impact / small effort] Tighten raw-depth intake: confidence, range, motion
+  Raise DepthScanSource.MinConfidence from 100 to 128 (Google's recommendation), and use a higher threshold (about 180-200) for points that carve cells or set heights. Keep integrating only new raw timestamps (about 10 Hz). Drop points under 0.3 m or over 4-5 m and weight them by 1/distance^2. Skip frames when angular velocity is high (motion blur) or when session tracking is not 'Tracking'. Remove the fallback to smoothed depth next to raw confidence, because that pairing is inconsistent.
+  RISKS: Higher thresholds reduce coverage on plain tiles. Pair this with the full-image unprojection recommendation and with user guidance to move the phone.
+
+* [medium impact / medium effort] Unproject the full depth image with intrinsics instead of the screen grid
+  In portrait the screen shows only a crop of the landscape camera/depth image, so the 40xN screen grid throws away about a third of the depth pixels every frame. Iterate over depth pixels directly: scale XRCameraIntrinsics (from ARCameraManager.TryGetIntrinsics, each frame) to the depth resolution, accounting for the crop when aspect ratios differ. Compute the sensor-frame point from (x - cx')*d/fx', (y - cy')*d/fy', d. Rotate it into the Unity camera frame for Screen.orientation and transform with cameraToWorld. Check the mapping once against TrackableType.Depth raycasts, as CheckMapping already does. Subsample (for example every 2nd pixel) to keep the CPU cost similar. Run the loop in a Burst job over the NativeArray from XRCpuImage.GetPlane(0).
+  RISKS: Neither Unity nor Google documents which way the Unity ARCore camera pose is oriented relative to the sensor, so the orientation step needs the on-device check. Off-screen cells get filled too, which is desirable but changes the scan's look.
+
+* [high impact / large effort] Add an obstacle layer: 2.5D height map with free-space carving
+  ARCore has no meshing, bounding boxes or plane classification, so build obstacles from depth. For each 5 cm floor cell, keep: (1) max and min observed height of confident points between floor+5 cm and 2 m, (2) hit/miss log-odds from ray carving (the machinery already exists for surface levels). Cells with persistent points above the floor become obstacles. Cluster them (connected components) into footprints and draw extruded translucent boxes or walls, like the Quest room setup. Remove floor-grid cells under obstacle footprints and clip ARCore desk-plane polygons by the scanned occupancy. That stops the convex-hull desk plane bleeding over chairs (S4) and gives chair legs and desks a real shape (S5). Also enable Vertical plane detection (supported on ARCore) to get walls for the room boundary.
+  RISKS: CPU cost on low-end phones means the work should run in Burst jobs at the ~10 Hz raw rate. Thin chair legs (2-3 cm) fall below the depth resolution beyond about 1.5 m, so footprints will be blobby. People walking through need decay or forgetting (log-odds clamping).
+
+* [medium impact / small effort] Anchor placed objects to the floor plane and share anchors
+  In ARToolkitManager.CreatePlacementParent, when the placement hit is on an ARPlane (floor), use ARAnchorManager.AttachAnchor(plane, pose) instead of a free ARAnchor component, so objects follow ARCore's plane height corrections. Reuse one anchor for objects within about 1-2 m of each other, remove anchors of deleted objects (TryRemoveAnchor), and keep content within 8 m of its anchor, per Google's guidance.
+  RISKS: ARCore does not release trackables that have anchors attached, so many anchors on many planes cost CPU. If a plane is subsumed, re-attach to the plane that subsumed it.
+
+* [medium impact / small effort] Plane visual hygiene
+  Set ARPlaneMeshVisualizer.trackingStateVisibilityThreshold to Tracking (the prefab currently has Limited) and keep hideSubsumed = true. Once the room scan has confirmed a level, hide the raw ARCore plane fill and outline for that height and draw the scan-derived outline instead. ARCore polygons are convex hulls and will always cover gaps between desks and the chairs.
+  RISKS: Before any scan data exists the user sees less feedback, so show the ARCore planes until the first level is confirmed.
+
+* [low impact / small effort] Guard against unsupported ARCore features
+  Do not build on ARMeshManager, ARBoundingBoxManager, ARPlane.classifications, NotAxisAligned planes, human segmentation or ARShaderOcclusion for the phone target. Check descriptors (supportsClassification, environmentDepthImageSupported and so on) and keep EnvironmentDepthMode at Fastest. Keep EIS (image stabilization) off, because the depth lookup relies on the display matrix.
+  RISKS: None, apart from reviewing any code that already assumes these features.
+
+* [medium impact / small effort] Scan UX guidance based on ARCore depth behaviour
+  Depth needs device motion and works best at 0.5-5 m. Show a coverage/confidence overlay and prompt the user to walk slowly and sweep the phone at waist height, not stand still, and to look at the floor from 1-3 m. Warn about glossy or plain floors when the confident-pixel ratio stays low. This targets the patchy coverage and holes in S3.
+  RISKS: None beyond UI work.
+
+* [medium impact / large effort] Optional: indoor semantics through Unity Inference Engine
+  ARCore Scene Semantics is outdoor-only, so for indoor floor/wall/furniture labels run a lightweight segmentation model (an ADE20K-trained one with floor, wall, chair, table and desk classes, exported to ONNX opset <= 25) on GPUCompute at 2-5 Hz on a downscaled camera image (XRCpuImage.ConvertAsync). Project the labels onto the scan cells through the same depth unprojection, and use them as priors or to label obstacles. Avoid the GPL-3.0 unity/inference-engine-yolo model in a redistributed toolkit.
+  RISKS: Model speed, heat and battery on mid-range phones are untested. A specific model has not been chosen or tested, and licences must be checked. Labels are 2D and inherit depth noise when projected.
+
+* [low impact / small effort] Optional: prefer ToF camera configs when present
+  In ARCameraManager / ARCoreSessionSubsystem camera-config selection, prefer configs with ArCameraConfigDepthSensorUsage.RequireAndUse on devices that have one (Galaxy S20+/Ultra, Note10+, S10 5G, LG V60), for better depth on featureless floors and moving people.
+  RISKS: Only a few, older devices have ToF. Choosing the wrong config can reduce camera resolution or frame rate.
+
+--- FINDINGS ---
+
+# AROcclusionManager - environment depth modes on ARCore (verified=true)
+  CLAIM: On ARCore only Disabled and Fastest are meaningful for Environment Depth Mode. Unity's docs say the other modes do not improve depth texture quality or add frame cost. AROcclusionManager defaults to m_EnvironmentDepthMode = Fastest and m_EnvironmentDepthTemporalSmoothing = true.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Documentation~\features\occlusion\occlusion-manager.md (NOTE block); Runtime\ARFoundation\Occlusion\AROcclusionManager.cs lines 113-123; confirmed at https://docs.unity3d.com/Packages/com.unity.xr.arfoundation@6.6/manual/features/occlusion/occlusion-manager.html
+  APPLIES: RealWorldOcclusion.Configure already uses Fastest with smoothing on, which is correct. Switching to Medium or Best will not improve quality on phones.
+
+# ARCore occlusion descriptor / support detection (verified=true)
+  CLAIM: ARCoreOcclusionSubsystem ties three descriptor delegates to one native call, UnityARCore_OcclusionProvider_DoesSupportEnvironmentDepth: environmentDepthImageSupported, environmentDepthConfidenceImageSupported and environmentDepthTemporalSmoothingSupported. They only report correctly after the AR session has started. Human stencil and human depth are not supported on ARCore.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreOcclusionSubsystem.cs lines 25-43; Documentation~\features\occlusion.md
+  APPLIES: The project already waits for the session (RealWorldOcclusion.TurnOffIfUnsupported, DepthScanSource.IsAvailable). Confidence and smoothing support can be taken as implied by depth support.
+
+# Depth CPU image API names in AR Foundation 6.6 (verified=true)
+  CLAIM: AROcclusionManager exposes these methods. TryAcquireEnvironmentDepthCpuImage returns the smoothed image if environmentDepthTemporalSmoothingEnabled is true, otherwise the raw one. TryAcquireRawEnvironmentDepthCpuImage always returns raw (ArFrame_acquireRawDepthImage16Bits). TryAcquireSmoothedEnvironmentDepthCpuImage always returns smoothed (ArFrame_acquireDepthImage16Bits). TryAcquireEnvironmentDepthConfidenceCpuImage always returns the RAW depth confidence image (ImageType.RawEnvironmentDepthConfidence); there is no smoothed confidence. GPU textures: TryGetEnvironmentDepthTexture(out Texture) and TryGetEnvironmentDepthConfidenceTexture(out ARExternalTexture). The environmentDepthTexture and environmentDepthConfidenceTexture properties are [Obsolete] since 6.1. Raw and smoothed images are both available whenever depth is supported, whatever the smoothing flag.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARFoundation\Occlusion\AROcclusionManager.cs lines 263-379, 577-594; com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreOcclusionSubsystem.cs lines 105-131; Runtime\ARCoreCpuImageApi.cs lines 13-19; Documentation~\features\occlusion.md
+  APPLIES: DepthScanSource.TryReadFrame uses raw depth plus confidence, which is the only pairing that matches (confidence belongs to raw depth). Its fallback to TryAcquireEnvironmentDepthCpuImage may hand over smoothed depth next to raw confidence, and those two do not match.
+
+# Depth image formats and units (verified=true)
+  CLAIM: XRCpuImage.Format.DepthUint16 is 16-bit unsigned depth in millimetres. OneComponent8 (confidence) is 0-255. ARCore reports depth along the camera principal axis (view-space z), not along the ray, over 0-65535 mm (about 65 m). The deprecated 13-bit API stopped at 8191 mm. Depth images are typically about 160x120, up to 640x480. ARCore 1.56 added float-metre depth APIs (AcquireDepthImageMeters), but the Unity ARCore 6.6.2 CPU image API only has the four ImageTypes (Camera, EnvironmentDepth, RawEnvironmentDepth, RawEnvironmentDepthConfidence).
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARSubsystems\Common\Textures\XRCpuImage\CpuImageFormat.cs lines 57-65; https://developers.google.com/ar/reference/c/group/ar-frame ; https://developers.google.com/ar/whatsnew-arcore
+  APPLIES: DepthGeometry.PointFromDepth (depth / cos(angle to forward)) is correct for principal-axis depth. With about 160x120 depth pixels, one pixel covers several centimetres on a floor 2-3 m away, so jagged edges are expected at 5 cm cells.
+
+# Raw depth cadence, reprojection, confidence threshold (verified=true)
+  CLAIM: ARCore produces about 10 new raw depth estimates per second. The frames in between are 3D reprojections of the last estimate to the current pose. A new estimate shows up as a changed ArImage timestamp. Google recommends 'removing depth pixels below a confidence threshold of half confidence (128)'. Raw depth costs about half as much compute as full depth and is sparse (0 = no depth).
+  SRC: https://developers.google.com/ar/reference/c/group/ar-frame ; https://developers.google.com/ar/develop/c/depth/raw-depth
+  APPLIES: DepthScanSource already skips repeated timestamps (line 151), which is good. Its MinConfidence = 100 (DepthScanSource.cs line 25) is below Google's 128. Low-confidence pixels on shiny or plain tiles are a likely source of floor points below the real floor and of patchy coverage (S1, S3).
+
+# Depth accuracy / range / failure cases (verified=true)
+  CLAIM: Google's figures: best accuracy at about 0.5-5 m (overview page); the ArFrame reference says best accuracy is 500-15000 mm. Depth only becomes valid after the device moves (depth from motion). Surfaces with few or no features, such as white walls, give imprecise depth. A ToF sensor helps with featureless surfaces and with moving people or objects. Accuracy drops with distance. Google does not document reflective or glossy floors explicitly. My inference from general stereo/motion-depth behaviour: mirror-like tiles return the depth of the reflected scene, which lies BELOW the floor plane.
+  SRC: https://developers.google.com/ar/develop/depth ; https://developers.google.com/ar/reference/c/group/ar-frame ; https://developers.google.com/ar/develop/unity-arf/depth/raw-depth
+  APPLIES: The classroom has glossy tiles. A depth-histogram floor height (SurfaceLevel.AddHeightSample/RefreshHeight) can get pulled below the real floor, which fits S1 (grid sinks) and S2 (surface depth correction misses and the box bottom gets cut). The reflection point is inference, not documented.
+
+# ToF vs depth-from-motion devices (verified=true)
+  CLAIM: The ARCore devices page marks 'Supports Depth API' for each device. It lists ToF hardware depth sensors only on a few older flagships: Galaxy Note10+, Galaxy S10 5G, Galaxy S20+/S20 Ultra 5G, LG V60 ThinQ. The page says more than 88% of active devices support Depth (May 2026). ARCore merges all available sources automatically. ArCameraConfigDepthSensorUsage.RequireAndUse / DoNotUse can filter camera configs through ArCameraConfigFilter.
+  SRC: https://developers.google.com/ar/devices ; C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ArCameraConfigDepthSensorUsage.cs
+  APPLIES: Most current phones (Pixels, recent Galaxys) use depth from motion only, so the scan must be built for noisy, motion-dependent depth rather than sensor-grade depth.
+
+# How ARCore depth reaches shaders (phone path) (verified=true)
+  CLAIM: The ARCore provider publishes the depth texture as shader property '_EnvironmentDepth' with keyword 'ARCORE_ENVIRONMENT_DEPTH_ENABLED'. The keyword is disabled when OcclusionPreferenceMode is NoOcclusion or depth is off (GetShaderKeywords2). ARCoreBackground.shader declares it as multi_compile_local. In the fragment it samples _EnvironmentDepth (metres) at the same UV as the camera image and writes gl_FragDepth / SV_Depth through ConvertDistanceToDepth (reversed on Vulkan: 1 - depth). This is a HARD per-pixel depth write with no soft blending. _UnityDisplayTransform is set only on the background material (ARCameraBackground.cs line 492), not globally. AfterOpaques mode is also hard: it discards where scene depth >= env depth.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreOcclusionSubsystem.cs lines 47-54, 181-189; Assets\Shaders\ARCoreBackground.shader (frag); Assets\Shaders\ARCoreBackgroundAfterOpaques.shader lines 134-149; com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARFoundation\Camera\ARCameraBackground.cs lines 482-503, 536-557
+  APPLIES: S2 (torn box bottom) is exactly what hard occlusion against a low-resolution, noisy, bilinearly upsampled depth map looks like at a floor contact. Custom soft occlusion needs the app to set the display matrix globally (from ARCameraFrameEventArgs.displayMatrix) and sample _EnvironmentDepth itself.
+
+# ARShaderOcclusion / hard vs soft occlusion shaders (verified=true)
+  CLAIM: ARShaderOcclusion is officially supported only on Android XR and Meta OpenXR headsets; phones must use AROcclusionManager + ARCameraBackground. In the code, on ARCore it still calls Shader.SetGlobalTexture for each occlusion texture and sets the provider keywords globally, then returns early because TryGetPoses/Fovs/NearFarPlanes fail. So no _EnvironmentDepthProjectionMatrices, no _NdcLinearConversionParameters and no XR_HARD_OCCLUSION/XR_SOFT_OCCLUSION keywords are ever set on phones. When the component is enabled, it also turns off ARCameraBackground's occlusion. The soft preprocess shader (Occlusion/Soft/DepthPreprocessing) samples a Texture2DArray '_EnvironmentDepthTexture' at target 4.5, which is a headset stereo path.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARFoundation\Occlusion\ARShaderOcclusion.cs lines 24-30, 180-200; Documentation~\features\occlusion\shader-occlusion.md; Documentation~\features\occlusion\workflow.md (WARNING); Documentation~\features\occlusion\platform-support.md (component table); Assets\Shaders\SoftOcclusionPreprocessing.shader
+  APPLIES: Do not plan on AR Foundation's soft occlusion for the phone build. Soft occlusion on ARCore has to be a custom URP shader that samples _EnvironmentDepth.
+
+# URP requirements (verified=true)
+  CLAIM: Phone occlusion needs AROcclusionManager and ARCameraBackground on the XR Origin camera, plus the URP ARBackgroundRendererFeature. With Vulkan, ARCore 6.6.0 added a validation rule requiring ARCommandBufferSupportRendererFeature. Mobile_Renderer.asset has both features active. The Android graphics API order is Vulkan, then GLES3; ARCoreBackground.shader has separate subshaders for each.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\CHANGELOG.md [6.6.0]; com.unity.xr.arfoundation@d57b0b4d336a\Documentation~\features\occlusion\workflow.md; C:\Unity\ErasmusARToolkit\Assets\Settings\Mobile_Renderer.asset lines 13-28; ProjectSettings\ProjectSettings.asset (AndroidPlayer m_APIs 0x15,0x0b)
+  APPLIES: The render setup is correct. Any custom depth-sampling shader needs a Vulkan (reverse-Z) path and a GLES path.
+
+# ARPlaneManager on ARCore - capabilities and classification (verified=true)
+  CLAIM: ARCorePlaneSubsystem registers supportsHorizontalPlaneDetection = true, supportsVerticalPlaneDetection = true, supportsArbitraryPlaneDetection = false, supportsBoundaryVertices = true and supportsClassificationDelegate = () => false. ARPlane.classifications / classification are therefore always None on ARCore: there is no floor/table/seat labelling. Alignments come from ARCore types HORIZONTAL_UPWARD_FACING, HORIZONTAL_DOWNWARD_FACING and VERTICAL. NotAxisAligned detection is not available.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCorePlaneSubsystem.cs lines 160-174; com.unity.xr.arfoundation@d57b0b4d336a\Documentation~\features\plane-detection\platform-support.md (support table); https://developers.google.com/ar/reference/c/group/ar-plane
+  APPLIES: Floor versus table has to be decided by height (lowest large HorizontalUp surface), as the project does (RoomSurfaceMap.FloorHeight). Obstacle recognition cannot come from plane classification on ARCore.
+
+# ARCore plane boundary polygons are convex (verified=true)
+  CLAIM: ArPlane_getPolygon returns 'the 2D vertices of a convex polygon approximating the detected plane' in plane-local X-Z. The center pose is the centre of the bounding rectangle with +Y as the normal. The Unity provider flips handedness and winding (FlipBoundaryHandednessJob / FlipBoundaryWindingJob). ARCore finds planes from clusters of feature points, and textureless flat surfaces may not be detected.
+  SRC: https://developers.google.com/ar/reference/c/group/ar-plane ; https://developers.google.com/ar/develop/fundamentals ; C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCorePlaneSubsystem.cs lines 24-75
+  APPLIES: Explains S4: a desk-height convex hull spans gaps between desks and covers chair backs and seats. Raw ARCore plane polygons should only be used as priors (the project does this in ArcorePlanePriors/RoomSurfaceMap.AddPrior). They should not be drawn as-is on top of obstacles.
+
+# Subsumption, tracking state, pose updates (verified=true)
+  CLAIM: ARCore supports subsumption. Unity keeps the subsumed plane and stops updating it; ARPlane.subsumedBy points to the surviving plane. ARPlaneMeshVisualizer.hideSubsumed defaults to true. A plane that leaves view can become TrackingState.Limited instead of being removed. When a plane's boundary changes, its Transform position and rotation may change too, and AR Foundation recommends anchors for content that must stay fixed. The project's ARToolkitPlane.prefab uses m_TrackingStateVisibilityThreshold: 1 (Limited), so planes with stale poses are still drawn.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Documentation~\features\plane-detection.md (Subsumption); com.unity.xr.arfoundation@d57b0b4d336a\Documentation~\features\plane-detection\arplane.md lines 27-43; Runtime\ARFoundation\Planes\ARPlaneMeshVisualizer.cs lines 63-65, 141-147; C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Prefabs\ARToolkitPlane.prefab lines 66-67
+  APPLIES: Skipping subsumedBy planes in grouping is correct (ARPlaneSurfaces.cs line 140). Raising the visibility threshold to Tracking (2) and re-reading plane heights on every 'updated' event would stop stale plane heights from leaking into the floor estimate.
+
+# Trackables parenting and world-space caching (verified=true)
+  CLAIM: XROrigin creates a child 'Trackables' (TrackablesParent). In OnBeforeRender it copies the pose of the camera's parent (Camera Offset) onto TrackablesParent and raises TrackablesParentTransformChanged. All trackables (planes, anchors, point clouds) are spawned under it, and ARAnchorManager converts poses with TrackablesParent.InverseTransformPose. Trackable data is session space. AR Foundation warns that after tracking loss the platform may set up a new session-to-world mapping, and 'GameObjects ... not parented to a trackable ... will suddenly move'. ARCore separately notes that poses can change as it improves its understanding.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.core-utils@a8b900321199\Runtime\XROrigin.cs lines 48-61, 540-545, 586-620; com.unity.xr.arfoundation@d57b0b4d336a\Documentation~\features\anchors\introduction.md lines 14-24; Runtime\ARFoundation\Anchors\ARAnchorManager.cs lines 80-142; https://developers.google.com/ar/develop/fundamentals
+  APPLIES: RoomSurfaceView puts all scan meshes under a root at the world origin (RoomSurfaceView.cs lines 14-15, 99-110), and SurfaceLevel heights are world y. Neither follows ARCore pose corrections or re-localisation, so the grid can end up offset from the real floor (S1) while ARCore planes and anchors move on.
+
+# ARMeshManager / meshing and ARBoundingBoxManager on ARCore (verified=true)
+  CLAIM: The ARCore XR Plug-in has no meshing and no bounding boxes. ARCoreLoader creates only Session, Camera, PointCloud, Plane, Anchor, Raycast, ImageTracking, Input, Face, Occlusion and EnvironmentProbe subsystems, with no XRMeshSubsystem or XRBoundingBoxSubsystem. The AR Foundation support tables leave ARCore blank for both. Meshing is supported on ARKit, visionOS, Meta OpenXR and Android XR (headsets); bounding boxes on ARKit, Meta OpenXR and XR Simulation.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreLoader.cs lines 22-32, 116-126; com.unity.xr.arfoundation@d57b0b4d336a\Documentation~\features\meshing\platform-support.md; Documentation~\features\bounding-box-detection\platform-support.md; https://docs.unity3d.com/Packages/com.unity.xr.arfoundation@6.6/manual/features/meshing/platform-support.html
+  APPLIES: A Quest-style room mesh or furniture boxes are not available from the SDK on Android phones. They must be reconstructed from raw depth (TSDF, voxel or 2.5D height map), which is what the project's RoomSurfaceMap is growing into.
+
+# Raycasts on ARCore (verified=true)
+  CLAIM: ARCoreRaycastSubsystem supports these trackable types: Planes (all plane types except PlaneWithinInfinity), FeaturePoint and Depth. Viewport, world and tracked raycasts are all supported. BoundingBox raycasts are not.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreRaycastSubsystem.cs lines 176-182; Documentation~\features\raycasts.md
+  APPLIES: The depth hit test (TrackableType.Depth) that DepthScanSource.CheckMapping uses as ground truth is a supported ARCore feature.
+
+# ARAnchorManager on ARCore (verified=true)
+  CLAIM: ARCore anchors support trackable attachments (ARAnchorManager.AttachAnchor(ARPlane, Pose)), synchronous add and async cancellation. Save/Load only work when Cloud Anchors are enabled in ARCoreRuntimeSettings; Erase and GetSavedAnchorIds are unsupported. Google's guidance: reuse one anchor for nearby objects, detach anchors you no longer need, and note that 'ARCore does not release Trackables that have attached anchors'. Each trackable has a CPU cost. Keep objects within 8 m of their anchor.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreAnchorSubsystem.cs lines 365-384; Documentation~\features\anchors\platform-support.md; com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARFoundation\Anchors\ARAnchorManager.cs lines 105-154; https://developers.google.com/ar/develop/anchors
+  APPLIES: ARToolkitManager.CreatePlacementParent (lines 299-317) adds a free session anchor (new ARAnchor component) for each placed object. It is not attached to the floor plane, so an object placed on the floor does not follow ARCore's plane height corrections.
+
+# Unprojecting a depth pixel to world (portrait) (verified=true)
+  CLAIM: XRCameraIntrinsics gives focalLength and principalPoint (from the top-left corner) in pixels of the CPU camera image at its resolution. The values can change every frame (ARCameraManager.TryGetIntrinsics). Google: when aspect ratios differ, 'the depth image is a crop of the camera image'; map between them with ArFrame_transformCoordinates2d. AR Foundation's display matrix is row-major and includes a y-flip. The ARCore background computes textureUV = (screenUV.x, screenUV.y, 1, 0) * _UnityDisplayTransform (row vector) and samples depth at that same UV. ARCameraBackground sets camera.projectionMatrix from the ARCore frame. Two correct methods: (a) screen/viewport, then display matrix, then depth UV, then ray from Camera.projectionMatrix.inverse, then point = camPos + dir * depth / dot(dir, camForward). (b) Per depth pixel: scale the intrinsics to the depth resolution (fx' = fx*Wd/Wc, cx' = cx*Wd/Wc, plus any crop offset), X = (x+0.5-cx')*d/fx', Y = (y+0.5-cy')*d/fy', Z = d in the sensor frame (x right, y down, landscape), then rotate into the display-oriented Unity camera frame for the current screen orientation (portrait = 90 degrees about z). Neither the Unity nor the Google docs say which way the Unity ARCore camera pose is oriented, so method (b) should be checked with a depth raycast.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\Runtime\ARSubsystems\Camera\XRCameraIntrinsics.cs; Runtime\ARFoundation\Camera\ARCameraManager.cs lines 253-276; Documentation~\features\camera\display-matrix-format-and-derivation.md; com.unity.xr.arcore@48fb51f3ca76\Assets\Shaders\ARCoreBackground.shader (vert: textureCoord = mul(float4(uv,1,0), _UnityDisplayTransform)); https://developers.google.com/ar/develop/c/depth/developer-guide
+  APPLIES: DepthScanSource uses method (a) with four candidate mappings checked against depth raycasts, which is sound. But it samples only screen-grid points, so in portrait it throws away the part of the landscape depth image outside the on-screen crop. On a roughly 9:19.5 screen showing a 4:3 image, that is about 35-40% of depth pixels (my calculation, not documented).
+
+# Image stabilization (EIS) (verified=true)
+  CLAIM: ARCore supports image stabilization. When ARCORE_IMAGE_STABILIZATION_ENABLED is on, the background uses per-vertex 3D texcoords (ARCoreImageStabilizationUtils mesh) instead of _UnityDisplayTransform, so a display-matrix-based depth lookup would no longer match the screen. Both project scenes have m_ImageStabilization: 0.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Assets\Shaders\ARCoreBackground.shader (ARCORE_IMAGE_STABILIZATION_ENABLED branches); Runtime\ARCoreImageStabilizationUtils.cs; C:\Unity\ErasmusARToolkit\Assets\ARToolkitContent\Scenes\ARScene.unity line 482; Assets\ErasmusARToolkit\Samples\Scenes\ARToolkitDemo.unity line 627
+  APPLIES: Keep EIS off, or add a guard: DepthImageMapping and any custom soft-occlusion shader assume the display-matrix mapping.
+
+# Occlusion quality guidance from Google (verified=true)
+  CLAIM: Google recommends replacing the hard Z-buffer test with a fade: the asset fades into the background along a '2 * kDepthTolerancePerMm * asset_depth_mm' range. Depth 0 means no data. Two methods are described: per-object forward-pass occlusion in the material shader, or two-pass rendering into an intermediate buffer.
+  SRC: https://developers.google.com/ar/develop/c/depth/developer-guide ; https://developers.google.com/ar/develop/unity-arf/depth/developer-guide
+  APPLIES: Directly relevant to S2 (jagged, torn box bottom) and to grid edges near chair legs (S4).
+
+# ARCore Scene Semantics (verified=true)
+  CLAIM: Scene Semantics labels 11 outdoor classes (sky, building, tree, road, sidewalk, terrain, structure, water, vehicle, object, person). Google states it 'Supports outdoor scenes only and is not intended for indoor use cases' and should be used in portrait only. In Unity it is available only through ARCore Extensions for AR Foundation (ARSemanticManager.TryGetSemanticTexture / TryGetSemanticConfidenceTexture / GetSemanticLabelFraction, with ARCoreExtensionsConfig Semantic Mode = Enabled), not through the ARCore XR Plugin 6.6.2. ARCore Extensions has supported AR Foundation 6 since v1.48; the latest is v1.56 (targetSdkVersion 37). Compatibility with AR Foundation 6.6.2 specifically is not confirmed. ARCore Extensions is not installed in this project (Packages/manifest.json).
+  SRC: https://developers.google.com/ar/develop/scene-semantics ; https://developers.google.com/ar/develop/unity-arf/scene-semantics ; https://developers.google.com/ar/whatsnew-arcore ; https://github.com/google-ar/arcore-unity-extensions/releases/tag/1.56.0 ; C:\Unity\ErasmusARToolkit\Packages\manifest.json
+  APPLIES: Not usable for a classroom (indoor floor, desks, chairs). Indoor semantics would need a custom ML model.
+
+# Native ARCore config access (verified=true)
+  CLAIM: ARCoreSessionSubsystem.beforeSetConfiguration passes ARCoreBeforeSetConfigurationEventArgs, which exposes the native ArSession and ArConfig. With a native plugin, ArConfig can be edited before it is applied. SetConfigurationDirty() forces the event to fire again. The managed ArConfig wrapper in 6.6.2 has no depth or semantic setters.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Runtime\ARCoreBeforeSetConfigurationEventArgs.cs; Runtime\ARCoreSessionSubsystem.cs lines 39-47, 164, 350-360; Runtime\ArConfig.cs
+  APPLIES: This is an escape hatch only. None of the needed floor or obstacle features require it.
+
+# Unity Inference Engine 2.6.1 for indoor semantics / depth (verified=true)
+  CLAIM: com.unity.ai.inference imports ONNX (opset 7-25), LiteRT and PyTorch-export models. It runs on BackendType.GPUCompute, with GPUPixel as a fallback when compute shaders are missing. Unity's Hugging Face org ships inference-engine-midas (relative monocular depth) and inference-engine-yolo (YOLOv8-12 detection only, GPL-3.0 licence).
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.ai.inference@9a123aee5df7\Documentation~\supported-models.md; Documentation~\create-an-engine.md line 41-42; https://huggingface.co/unity ; https://huggingface.co/unity/inference-engine-yolo
+  APPLIES: Could add indoor floor/obstacle semantics (for example a floor/wall/chair/table segmentation model) that ARCore lacks. MiDaS is relative depth and does not beat ARCore metric depth. The YOLO model is GPL-3.0, a licensing risk for a redistributed toolkit. A specific ADE20K segmentation model has not been tested for mobile speed.
+
+# Open-source reference: ARCore Depth Lab (verified=true)
+  CLAIM: ARCore Depth Lab (Apache-2.0) demonstrates oriented reticles, a depth-mesh collider, raw point-cloud visualisation and fusion, and depth-aware effects on Android. It targets AR Foundation 4.2 with ARCore Extensions 1.24 and is no longer actively maintained.
+  SRC: https://github.com/googlesamples/arcore-depth-lab
+  APPLIES: Useful as a reference for the depth mesh, surface normals and point-cloud fusion algorithms. The code needs porting to AR Foundation 6 APIs (TryAcquire*CpuImage, trackablesChanged).
+
+# AROcclusionManager frame timing (verified=true)
+  CLAIM: Since AR Foundation 6.1, AROcclusionManager.frameReceived fires in Application.onBeforeRender, not in Update. XROrigin also updates TrackablesParent in onBeforeRender.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\CHANGELOG.md line 365; Runtime\ARFoundation\Occlusion\AROcclusionManager.cs line 432 (Application.onBeforeRender += OnBeforeRender)
+  APPLIES: Global shader data for custom soft occlusion (display matrix, depth texture) should be set in the same callback, or in ARCameraManager.frameReceived, so it lines up with the frame being rendered.
+
+=================== RESEARCH floor-plane-algorithms ===================
+
+--- RECOMMENDATIONS ---
+
+* [high impact / small effort] 1. Visibility (mirror-aware) floor constraint: kill below-floor ghost levels
+  Fixes S1, S2, and partly S3. Cost: one ray-plane intersection per depth point, O(N) with N = 3k-20k per frame, well under 0.5 ms. In RoomSurfaceMap: (a) Choose the floor F explicitly (see rec 2), not as 'lowest level with >= 0.5 m2'. (b) In RefineHeights/CollectVotes, check each point with y < F.Height - tol(d): intersect its camera ray with F. If the crossing cell of F is Occupied or has a prior (or is inside the largest ARCore HorizontalUp polygon), the point was seen THROUGH the floor, so it is a reflection or multipath. Don't add it to any histogram or discovery bin; add a floor HIT at the crossing cell instead, because the glossy tile itself is the floor. (c) DiscoverLevels: skip bins below F.Height - 0.05 m. (d) Remove or hide any level lower than F.Height - 0.05 m whose shown cells overlap F's shown or prior cells by > 20%. (e) Raycast: never return a level below F.Height - 0.02 m. This closes the placement-through-hole path behind S2.
+  RISKS: Real sunken areas (a step down into another room) would be suppressed while the upper floor covers them. The overlap test limits this to areas directly under the floor. Log removed levels during testing to confirm the hypothesis with on-device data (height of the ghost level versus desk height).
+
+* [high impact / small effort] 2. Fused, locked floor height: ARCore plane prior + robust depth mode + hysteresis
+  Fixes S1 (the grid never sinks and tile perspective matches). Cost: O(N) histogram updates plus a few mean-shift iterations, negligible. Floor prior h_A: area-weighted median y of ARCore HorizontalUp planes (subsumedBy == null) within 0.10 m of the lowest plane with area >= 1.0 m2, re-read every 0.5 s because plane poses refine. Depth estimate h_D: per floor level, a 1 cm histogram with exponential decay (multiply by 0.97 per integrated frame, about 3-4 s memory at 8 Hz, replacing never-decaying counts and the fixed 20-sample seed). Refine the peak with mean shift (Gaussian h = 1.5 cm, 3 iterations) or Huber IRLS (k = 1.345*sigma, sigma = 1.4826*MAD of in-window residuals). Fusion: h = h_A + clamp(h_D - h_A, -0.03, +0.03) when the peak holds >= 200 samples, else h_A. Display lock: change the drawn height only if |h - h_drawn| > 0.015 m holds for 3 consecutive rebuilds (about 1.5 s), with a slew limit of 0.02 m/s or a 1-Euro filter (mincutoff about 0.3 Hz, beta 0). Allow a DOWNWARD move of more than 0.03 m only if h_A itself moved down. Rebuild every level that uses drawnFloor (occluders) when the lock changes.
+  RISKS: If ARCore's floor plane is badly wrong (rare, and more likely on textureless floors), the 3 cm clamp stops depth from correcting it. Expose the clamp as a tunable and log h_A - h_D on device. Existing tests around SurfaceLevel.RefreshHeight will need updating.
+
+* [high impact / medium effort] 3. Better depth samples: confidence >= 128, quadratic noise model, denser Burst sampling, intrinsics-based unprojection
+  Fixes S1 and S3. Cost: processing all 160x120 = 19.2k pixels (or stride 2, 4.8k) in a Burst IJobParallelFor is about 1 ms on a mid-range phone (estimate). Raw depth only updates about 10 Hz, so only new timestamps are processed (already done). Parameters: MinConfidence 128 (ARCore guidance) instead of 100. Floor-evidence range 0.5-3.5 m (ARCore optimum starts at 0.5 m; keep 4.5 m only for carving). Noise model sigma(d) = 0.01 m + 0.005 m/m2 * d^2, to be calibrated by logging floor residuals. Hit tolerance 2*sigma(d) capped at 0.06 m, carve margin 3*sigma(d), vote weight 1/sigma^2 normalised. Compute normals from image-space neighbours at 1-2 px (Depth Lab style) instead of 2 grid samples 10+ px apart. Unproject with ARCameraManager.TryGetIntrinsics scaled to the depth size, as Depth Lab's MotionStereoDepthDataSource does, and keep the existing self-check against depth hit tests.
+  RISKS: Needs explicit asmdef references to Burst, Collections and Mathematics (currently only transitive). Orientation and cropping handling must be re-verified on portrait and landscape phones, where the existing DepthImageMapping self-check helps. More points per frame means more vote-dictionary work unless votes move to per-cell arrays.
+
+* [medium impact / small effort] 4. Evidence model: priors must be confirmed + two-threshold (hysteresis) show/hide
+  Fixes S4 (desk hull bleeding over chairs) and S3 (edge flicker). Cost: negligible. Set PriorWeight = 0.2, below OccupiedThreshold, so an ARCore convex-hull cell needs at least one depth hit to show. Alternatively, keep a prior only within 2 cells (0.10 m) of a cell that has hits, using a cheap two-pass distance transform. Add per-cell hysteresis: show when score > 0.6, hide only when score < 0.1, and keep the previous shown bit in between (Canny-style). Optionally widen the clamps toward OctoMap's ratio (for example MinLogOdds -2.0, MaxLogOdds 2.5) so a well-observed floor survives a few bad frames, and require 3 misses to carve a floor cell under a chair.
+  RISKS: Surfaces seen only by ARCore planes and never by depth (phones without depth, which use the FeaturePointScanSource) would vanish. Keep the old prior weight when the source is not precise.
+
+* [medium impact / small effort] 5. Mask cleanup: closing then opening, 8-connected components, size- and floor-aware hole filling
+  Fixes S3 (ragged blobs, islands, holes). Cost: O(cells). A 10x10 m floor at 5 cm is 40k cells, well under 1 ms, run at the existing 2 Hz rebuild. Pipeline per level before SurfaceMeshBuilder: Occupied mask, then binary closing with a 3x3 element (1 cell = 5 cm) to bridge sampling gaps, then opening 3x3 to cut spurs and one-cell bridges, then two-pass union-find labeling with 8-connectivity. Keep the largest floor component plus components >= 0.25 m2; table and seat levels keep components >= 0.10 m2 (the current 0.06 is too permissive). Fill holes <= 0.5 m2 on the floor (<= 0.25 m2 elsewhere) unless the hole's cells are strongly carved (logOdds < -0.5) or occupied by the obstacle layer (rec 7). The existing 1-2-1 field blur before marching squares can stay.
+  RISKS: Closing can bridge a narrow real gap between two desks (< 10 cm). Apply closing only to the floor level, or only across cells not carved.
+
+* [medium impact / medium effort] 6. Quest-like boundaries: contour + Douglas-Peucker + dominant-direction snapping + rectangle fitting
+  Fixes S3 and S5 (clean, straight, corner-aligned outlines). Cost: hundreds of vertices per level, microseconds. After rec 5: trace outer and hole contours (marching squares, which SurfaceMeshBuilder already does, or Suzuki border following). Simplify with RDP, epsilon = 0.04 m for the floor and 0.03 m for desks. Estimate the room yaw theta as the peak of a length-weighted histogram of edge angles folded mod 90 deg (1 deg bins, smoothed over +/-3 bins), pooled over all levels and slowly updated. Snap every edge within +/-10 deg of theta or theta+90 to that direction and re-intersect neighbouring edges; drop edges shorter than 0.05 m. For desk and seat levels, fit the minimum-area rectangle (rotating calipers on the convex hull, biased to theta). If polygonArea/rectArea >= 0.85, draw the rectangle, as Quest-style Bounded2D does. Triangulate the final polygon (ear clipping) for the fill mesh. Also rotate the world-space grid UV by theta in ARToolkitSurface.shader so grid lines run parallel to the tile grout.
+  RISKS: Non-Manhattan furniture (round tables, angled desks) would be squared off wrongly. The +/-10 deg gate and the 0.85 rectangularity test keep other shapes as simplified polygons. Placement raycasts should keep using the cell mask, or a point-in-polygon test on the final shape, so what is drawn and what is hit stay consistent.
+
+* [high impact / large effort] 7. 2.5D obstacle layer with ray-based free-space carving, output as boxes (occluders and colliders)
+  Fixes S4 and S5 (real obstacle recognition; chairs and desks carve the floor and occlude). Cost: per 5 cm cell, one float of log-odds plus a small top-height record. Rays run on XZ DDA, at most 80 cells each, about 2-5k rays per frame (every 2nd point), so up to about 400k steps at 8 Hz. That needs Burst, where it is estimated at about 1-2 ms on a mid-range phone. Hits: depth points (any normal) with height in [F+0.05, F+2.0] m mark their XZ cell as obstacle and update the top height (decayed max, or 90th percentile over a 5 cm height histogram). Misses: at each cell a ray passes before its end cell, if the ray's height there is in [F+0.05, top_of_cell), the column is not blocked at that height, so apply a miss (elevation_mapping-style visibility cleanup; Chisel-style carving). Output: obstacle mask, then closing/opening, then components, then minimum-area rectangles snapped to theta, then boxes (height = top). Render the boxes depth-only as occluders (replacing the current table-to-floor skirts for chairs and desks), give them colliders, and remove floor-grid cells under obstacle footprints. Tables and seats found as levels become box tops.
+  RISKS: Thin chair legs are barely visible in about 160x120 depth, so chairs mostly come from the seat and backrest, and the boxes are coarse. Moving people will create and then carve obstacles, so add decay (about 0.98 per frame) and require 3+ frames before a box appears. Memory is fine with the existing 32x32 chunks.
+
+* [high impact / medium effort] 8. Height-aware, soft real-world occlusion at contact (object shaders)
+  Fixes S2 (torn box bottom) and S4 (noise cutting objects near the floor). Cost: one environment-depth sample (or 5x5 blur, 25 samples, only near edges) plus about 10 ALU per fragment. In the virtual-object occlusion path, reconstruct each environment depth sample's world height (depth along the principal axis, times the ray direction, plus the camera position). If that real point lies < 0.04 m above the object's support level (or below it), it must not occlude. Otherwise use ARCore's soft visibility, clamp(0.5*(d_env - d_obj)/(0.015*d_obj) + 0.5, 0, 1), as in the codelab. Snap placed objects to support height + 0.002 m, and forbid supports below F (rec 1). This removes the dependence on the Surface Depth pass covering exactly the shown cells.
+  RISKS: Needs a custom URP shader or Shader Graph node for placed content, and environment-depth texture and display-matrix access in that shader (AR Foundation exposes these). Real objects lying flat on the floor, under 4 cm, would stop occluding, which is acceptable.
+
+* [medium impact / small effort] 9. Tighten the grid depth tolerances once the floor is trustworthy
+  Fixes S4 (grid over chair legs). Cost: none. After recs 1-2, lower _HeightTolerance in ARToolkitSurface.shader from 0.12 to 0.05 m, cap _MaxDepthBias at 0.15, and lower SurfaceDepthMaterials.PullHeight from 0.15 to 0.05-0.06 m. Real points more than about 5 cm above the floor (chair legs, bags) then hide the grid again. Combine with rec 7, so floor cells under obstacle footprints are not drawn at all and chair boxes occlude.
+  RISKS: With the current unstable floor height this would bring back grid speckle from depth noise. Do it only after recs 1-3 and check on glossy tiles.
+
+* [medium impact / medium effort] 10. Anchor levels to ARCore anchors and handle relocalisation
+  Fixes S1 after drift or relocalisation (grid at stale height or offset). Cost: a handful of anchors. Create one anchor per level: ARAnchorManager.AttachAnchor(floorPlane, pose) when descriptor.supportsTrackableAttachments, else TryAddAnchorAsync. Store the level's height and cell origin relative to that anchor, and apply the anchor's pose delta each frame (y for height; x/z and yaw for cells). If an anchor jumps > 0.05 m, or tracking was lost for > 2 s, pause integration for 1 s, halve all log-odds and restart the height lock so the level re-verifies instead of drawing stale geometry.
+  RISKS: ARCore may keep the anchor attached while the plane is later subsumed. Re-attach to the subsuming plane. Yaw corrections on the cell grid mean resampling chunks, so for small rotations only translate.
+
+* [low impact / large effort] 11. (Optional) On-device semantic veto with Unity Inference Engine
+  Helps S4 and S5. Cost: a segmentation network at about 256x256 per frame is likely 10-30 ms on the phone GPU (estimate), so run it at 2-5 Hz. ARCore Scene Semantics is outdoor-only, so a custom small indoor floor/furniture segmentation model (ONNX, imported into Inference Engine 2.6.1) would label depth pixels as floor, chair or table. Non-floor pixels could then never add floor hits, and floor pixels could never create obstacles.
+  RISKS: No verified mobile model was checked in this research. There are licensing, accuracy and battery costs, plus extra latency. Do this only after the geometric fixes (recs 1-9).
+
+--- FINDINGS ---
+
+# Local code: floor selection (verified=true)
+  CLAIM: RoomSurfaceMap.FloorHeight(minArea) returns the LOWEST drawn level with ShownArea >= 0.5 m2 (RoomScanner.MinFloorArea), otherwise the lowest drawn level. Nothing checks this level against ARCore's floor plane, and nothing requires it to have a footprint that doesn't overlap a higher floor.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomSurfaceMap.cs (lines 173-196); RoomScanner.cs line 25
+  APPLIES: S1/S2. A ghost level below the real floor (for example the mirror image of desk undersides on glossy tiles) wins as soon as it reaches 0.5 m2. drawnFloor then drives occluder bottoms, and placement can land on it.
+
+# Local code: carving cannot remove below-floor ghosts (verified=true)
+  CLAIM: VoteForLevel carves only when the camera-to-point ray CROSSES the level (originOffset*pointOffset < 0) and ends past the margin. Every real ray ends on or above the true floor, so no ray ever crosses a level below the floor. Such a level can only gain hits and is never carved. DiscoverLevels only needs points 0.2 m below the camera, with no lower limit relative to the floor.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomSurfaceMap.cs (lines 250-256, 359-384)
+  APPLIES: S1. This is the core reason a sunken floor grid persists. A physical visibility constraint is needed: nothing can be seen through an occupied floor.
+
+# Local code: placement raycast falls through floor holes (verified=true)
+  CLAIM: RoomSurfaceMap.Raycast returns the nearest SHOWN level along the ray. Where the floor level has a hole (not shown), the ray keeps going and can hit a lower (ghost) level, and the object pose gets that lower height.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomSurfaceMap.cs (lines 199-227)
+  APPLIES: S2. A box placed a few cm below the real floor has its bottom occluded by the noisy real floor depth, which gives a torn, jagged bottom edge. It also connects S3 (holes) to S2.
+
+# Local code: height estimator (verified=true)
+  CLAIM: SurfaceLevel keeps a 1 cm histogram within +/-15 cm of a FIXED seed height and adds 20 virtual seed samples. It takes the mean inside the densest 5-bin window. Counts never decay, and the seed (ARCore plane y at creation) is never updated from later ARCore plane refinements. Every up-facing point is added to every level's histogram.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\SurfaceLevel.cs (lines 14-23, 86-151)
+  APPLIES: S1. Mode-of-histogram is a good robust choice, but with no decay the level cannot follow ARCore drift or relocalisation, and ARCore's refined plane height is ignored after seeding.
+
+# Local code: depth sampling parameters (verified=true)
+  CLAIM: DepthScanSource samples only a 40-column grid (about 40x80 = 3200 points) from raw depth, with MinConfidence = 100. Normals come from neighbours 2 samples away and a sample counts as horizontal if the normal's |y| >= 0.85. Hit tolerance is linear (3 cm + 1 cm/m) and range is 0.3-4.5 m.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\DepthScanSource.cs (lines 23-28); RoomSurfaceMap.cs (lines 30-42)
+  APPLIES: S1/S3. Sparse sampling plus confidence and normal gating leaves gaps between 5 cm cells, which shows up as patchy coverage. ARCore recommends confidence >= 128 and says error grows quadratically, so a linear tolerance is too loose up close and too tight far away.
+
+# Local code: ARCore prior alone shows cells (verified=true)
+  CLAIM: SurfaceEvidence.PriorWeight = 0.5 is above OccupiedThreshold = 0.3, so cells inside an ARCore plane polygon are drawn with zero depth confirmation until two or more misses carve them (MissWeight 0.15).
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\SurfaceEvidence.cs (lines 28-39); ArcorePlanePriors.cs
+  APPLIES: S4. ARCore polygons are convex hulls, so a desk-height hull that spans chairs shows until the camera looks through each cell.
+
+# Local code: occlusion tolerance near surfaces (verified=true)
+  CLAIM: The AR Surface shader pulls the grid toward the camera for its depth test (_HeightTolerance 0.12 m, _DepthBias 0.05, _MaxDepthBias 0.3). The Surface Depth pass replaces measured depth with the surface's own depth wherever the real point is within PullHeight = 0.15 m above a SHOWN scanned cell. RealWorldOcclusion requests EnvironmentDepthMode.Fastest with temporal smoothing.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Shaders\ARToolkitSurface.shader (lines 28-30, 97-102); ARToolkitSurfaceDepth.shader; Runtime\Scanning\SurfaceDepthMaterials.cs (lines 15-21); Runtime\Core\RealWorldOcclusion.cs (lines 36-37)
+  APPLIES: S4/S2. The bottom 12-15 cm of chair legs can never hide the floor grid, which matches the grid drawn over chair legs. Outside shown cells the raw, smoothed depth still cuts objects. These tolerances can only shrink once the floor height is trustworthy.
+
+# Local code: region filter and mesh (verified=true)
+  CLAIM: SurfaceRegionFilter uses 4-connected flood fill, drops regions < 0.06 m2 and fills holes <= 0.25 m2 unless a cell is Carved. There is no morphological closing or opening. SurfaceMeshBuilder already uses marching squares with a 1-2-1 blur of the field, but has no polygon simplification or rectangle/orthogonal snapping.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\SurfaceRegionFilter.cs (lines 18-21, 116-150); SurfaceMeshBuilder.cs (lines 61-156)
+  APPLIES: S3/S5. The ragged blob edges and islands come from cell-level noise that closing and opening would remove. Quest-like straight edges need contour simplification plus dominant-direction snapping.
+
+# Local project: Burst/Collections available (verified=true)
+  CLAIM: packages-lock.json lists com.unity.burst 2.0.0, com.unity.collections 6.6.0 and com.unity.mathematics 1.4.0 as depth-1 (transitive) packages, so Burst jobs are possible if the toolkit asmdef references them.
+  SRC: C:\Unity\ErasmusARToolkit\Packages\packages-lock.json
+  APPLIES: Moving dense depth sampling, ray DDA carving and morphology into Burst IJobParallelFor makes 160x120 per-frame processing affordable on phones.
+
+# ARCore raw depth timing/resolution (verified=true)
+  CLAIM: The raw depth image is typically about 160x120 (up to 640x480 on some devices) and holds depth in mm along the camera principal axis. It gets about 10 new estimates per second. Frames in between are 3D reprojections to the current pose, and comparing timestamps tells new data from reprojections.
+  SRC: https://developers.google.com/ar/reference/c/group/ar-frame
+  APPLIES: The code already skips repeated timestamps and uses the principal-axis conversion. At about 160 px width, a 2-3 cm chair leg at 2 m covers only about 1-2 depth pixels (my inference), so leg occlusion from depth alone is unreliable (S4).
+
+# ARCore raw depth confidence and accuracy (verified=true)
+  CLAIM: ARCore docs: 'removing depth pixels below a confidence threshold of half confidence (128) tends to work well'. Optimal accuracy is between 500 mm and 5000 mm, and error increases quadratically with distance.
+  SRC: https://developers.google.com/ar/reference/c/group/ar-frame
+  APPLIES: Raise MinConfidence from 100 to 128. Weight or accept depth by a quadratic noise model and trim the floor evidence range to about 0.5-3.5 m (S1, S3).
+
+# ARCore depth source limits (verified=true)
+  CLAIM: ARCore depth uses depth-from-motion (merged with ToF when present). Surfaces with few or no features give imprecise depth, and depth needs device motion.
+  SRC: https://developers.google.com/ar/develop/depth
+  APPLIES: Uniform or glossy classroom tiles are a worst case. The floor height should not rest on raw depth alone; fuse it with ARCore planes (S1).
+
+# ARCore plane polygons are convex (verified=true)
+  CLAIM: Plane.getPolygon returns '2D vertices of a convex polygon approximating the detected plane'. Plane poses and anchors can adjust as ARCore updates its world model.
+  SRC: https://developers.google.com/ar/reference/java/com/google/ar/core/Plane
+  APPLIES: S4. Use convex hulls only as weak priors that need depth confirmation. Re-read plane heights continuously, because they refine.
+
+# Anchors for drift (verified=true)
+  CLAIM: ARCore anchors keep attached content at a stable place as understanding improves; without anchors objects can appear to drift. AR Foundation 6 offers ARAnchorManager.AttachAnchor(ARPlane, Pose), gated by descriptor.supportsTrackableAttachments, and TryAddAnchorAsync(Pose).
+  SRC: https://developers.google.com/ar/develop/anchors ; https://docs.unity3d.com/Packages/com.unity.xr.arfoundation@6.0/api/UnityEngine.XR.ARFoundation.ARAnchorManager.html ; https://docs.unity3d.com/Packages/com.unity.xr.arfoundation@6.0/manual/features/anchors/aranchormanager.html
+  APPLIES: S1 after relocalisation. Store each SurfaceLevel relative to an anchor attached to the floor ARPlane so the grid follows ARCore's corrections instead of staying at stale world coordinates.
+
+# ARCore Depth Lab techniques (verified=true)
+  CLAIM: Depth Lab (Apache 2.0) unprojects depth pixels with camera intrinsics scaled to the depth image size (MotionStereoDepthDataSource). DepthMeshCollider skips every 2nd pixel and rebuilds each frame. SmoothingFilter/SpeedAdaptiveFilter.cs is a 1-Euro filter (mincutoff, beta, dcutoff). OrientedReticle ports ComputeNormalMapFromDepthWeightedMeanGradient for per-pixel normals.
+  SRC: https://github.com/googlesamples/arcore-depth-lab ; https://raw.githubusercontent.com/googlesamples/arcore-depth-lab/master/Assets/ARRealismDemos/Common/Scripts/MotionStereoDepthDataSource.cs ; .../Collider/Scripts/DepthMeshCollider.cs ; .../SmoothingFilter/SpeedAdaptiveFilter.cs
+  APPLIES: Replace the inverse-projection plus display-matrix mapping with scaled intrinsics. Use the full depth image at stride 1-2. Use a 1-Euro filter on the drawn floor height and reticle (S1, S3).
+
+# ARCore soft occlusion (verified=true)
+  CLAIM: The ARCore depth codelab shader computes visibility = clamp(0.5*(depth_mm - asset_depth_mm)/(u_DepthTolerancePerMm*asset_depth_mm) + 0.5, 0, 1) with depthTolerancePerMm = 0.015, and can blur it with a 5x5 kernel (total weight 269).
+  SRC: https://codelabs.developers.google.com/codelabs/arcore-depth
+  APPLIES: S2. A soft transition band of about 1.5% of distance plus blur hides depth noise at the box/floor contact instead of a hard, jagged cut.
+
+# Mirror/glossy reflections create ghost geometry (verified=true)
+  CLAIM: The SIGGRAPH 2018 abstract (Whelan et al.) says mirror and glass surfaces 'introduce duplicate scene structures, effectively destroying the reconstruction'. A plane mirror's image lies on the perpendicular bisected by the mirror, so a reflected object appears as far behind (below) the surface as the object is in front of it.
+  SRC: https://history.siggraph.org/learning/reconstructing-scenes-with-mirror-and-glass-surfaces-by-whelan-goesele-lovegrove-straub-green-et-al/ ; https://en.wikipedia.org/wiki/Plane_mirror
+  APPLIES: S1. On glossy tiles, desk undersides (normals down) reflect as UP-facing virtual surfaces about 0.7 m below the floor, which DiscoverLevels can turn into a level. Points below the floor seen through an occupied floor cell should be re-projected onto the floor, not trusted.
+
+# ToF multipath (verified=false)
+  CLAIM: Multipath (for example a shiny floor next to a wall, or corners) mixes longer indirect paths into the return, warping depth near corners and concave areas. A specular floor bounce can be stronger than a grazing direct return.
+  SRC: https://medium.com/chronoptics-time-of-flight/multipath-interference-in-indirect-time-of-flight-depth-sensors-7f59c5fcd122 (403 when fetched; claim from search snippet) ; https://arxiv.org/abs/1805.09305
+  APPLIES: Only matters on phones with ToF, which ARCore merges into depth. It adds points that are too far, i.e. below the floor or behind walls. The same visibility constraint as for reflections handles it.
+
+# Elevation mapping (ANYbotics) (verified=true)
+  CLAIM: elevation_mapping (BSD-3) fuses per-cell height with variance, using a Mahalanobis threshold (default 2.5) to decide whether to fuse, overwrite or ignore a measurement. It clamps variance (min 9e-6, max 0.01) and runs ray-traced visibility cleanup at 1 Hz to remove cells that are no longer visible.
+  SRC: https://github.com/ANYbotics/elevation_mapping ; https://github.com/ANYbotics/elevation_mapping/blob/master/README.md
+  APPLIES: S4/S5. A 2.5D obstacle-height layer on the existing 5 cm grid gives obstacle footprints, and ray-based cleanup removes stale obstacle cells.
+
+# grid_map filter chain (verified=true)
+  CLAIM: The grid_map demo filter chain runs inpaint (radius 0.05), mean-in-radius 0.06, normal vectors radius 0.05, slope = acos(normal_z), roughness = |inpainted - smooth|, and traversability = 0.5*(1 - slope/0.6) + 0.5*(1 - roughness/0.1).
+  SRC: https://raw.githubusercontent.com/ANYbotics/grid_map/master/grid_map_demos/config/filters_demo_filter_chain.yaml
+  APPLIES: S3/S5. This is a template for turning a noisy height grid into floor, obstacle and hole classes with a few cheap per-cell filters.
+
+# Space carving on mobile (Chisel) (verified=true)
+  CLAIM: OpenChisel is a chunked, spatially hashed TSDF from the Project Tango Chisel work (example 16^3 chunks, 0.025 m voxels, 10 cm truncation, 0.05 m carving distance). It has optional space carving so 'moving objects and other inconsistencies' disappear, and runs on CPU without a GPU.
+  SRC: https://github.com/personalrobotics/OpenChisel
+  APPLIES: S3/S4. Shows that ray-based free-space carving runs on a phone CPU. A full TSDF is heavier than needed, so a 2.5D column map is enough here.
+
+# OctoMap log-odds (verified=false)
+  CLAIM: OctoMap uses hit/miss log-odds of 0.85/-0.4 (p = 0.7/0.4) and clamps to [-2, 3.5] (p = 0.12/0.97).
+  SRC: http://ais.informatik.uni-freiburg.de/publications/papers/wurm10octomap.pdf (connection refused; values from search snippet)
+  APPLIES: The project's SurfaceEvidence uses the same idea with smaller per-frame weights. Clamp bounds and hysteresis thresholds can be tuned from this reference.
+
+# Robust statistics (verified=true)
+  CLAIM: MAD has a 50% breakdown point and a normal-consistency factor of 1.4826. Huber's M-estimator reaches 95% efficiency on Gaussian data with k = 1.345 (Tukey biweight c = 4.6851) and is solved by IRLS. Mean shift is a mode-seeking algorithm on a KDE. Silverman bandwidth h = 0.9*min(sigma, IQR/1.34)*n^(-1/5).
+  SRC: https://en.wikipedia.org/wiki/Median_absolute_deviation ; https://www-sop.inria.fr/odyssee/software/old_robotvis/Tutorial-Estim/node24.html ; https://en.wikipedia.org/wiki/Mean_shift ; https://en.wikipedia.org/wiki/Kernel_density_estimation
+  APPLIES: S1. Refine the histogram peak with mean shift or Huber IRLS instead of a plain windowed mean. Use MAD as the per-level noise scale that sets hit tolerance adaptively.
+
+# 1-Euro filter and hysteresis (verified=true)
+  CLAIM: 1-Euro filter tuning: set beta = 0 and lower mincutoff until jitter disappears, then raise beta (order of 0.001-0.0001) to cut lag. Canny hysteresis keeps weak responses only if they connect to strong ones (two thresholds).
+  SRC: https://gery.casiez.net/1euro/ ; https://en.wikipedia.org/wiki/Canny_edge_detector
+  APPLIES: S1/S3. Smooth and lock the displayed floor height. Use two-threshold show/hide per cell so edges stop flickering.
+
+# Morphology, components, contours, simplification (verified=true)
+  CLAIM: Opening (erode then dilate) removes small foreground specks, and closing fills small holes. Two-pass union-find labeling handles 4 or 8 connectivity. Marching squares uses 16 cases, linear interpolation and saddle disambiguation, and is embarrassingly parallel. RDP simplification with epsilon is O(n log n) typical and O(n^2) worst case. A minimum-area enclosing rectangle has a side collinear with a convex hull edge (rotating calipers, linear time).
+  SRC: https://en.wikipedia.org/wiki/Opening_(morphology) ; https://en.wikipedia.org/wiki/Connected-component_labeling ; https://en.wikipedia.org/wiki/Marching_squares ; https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm ; https://en.wikipedia.org/wiki/Minimum_bounding_box_algorithms
+  APPLIES: S3/S5. This is the pipeline from the noisy cell mask to clean Quest-like floor polygons and desk rectangles. All steps are O(cells) or O(vertices) and cheap on a phone at 2 Hz.
+
+# Manhattan-world snapping (verified=true)
+  CLAIM: The Manhattan World assumption (Coughlan and Yuille) holds that indoor and urban scenes are built on a Cartesian grid. Pose-normalisation work picks the dominant Manhattan structure supported by the largest fraction of geometry and is robust to partial compliance. Building-footprint regularisation combines Douglas-Peucker with dominant-orientation and right-angle constraints.
+  SRC: https://proceedings.neurips.cc/paper/2000/file/90e1357833654983612fb05e3ec9148c-Paper.pdf (title/metadata only) ; https://arxiv.org/abs/2107.07778 ; https://elib.dlr.de/204860/2/isprs-annals-X-2-2024-217-2024.pdf (search snippet)
+  APPLIES: S3/S5. Snap simplified outline edges to the room's dominant yaw (+/-10 deg) and its 90-degree complement to get straight, corner-aligned edges. Also rotate the grid texture to that yaw so grid lines run parallel to the tile grout (S1 visual match).
+
+# Meta Quest scene model (verified=true)
+  CLAIM: Quest Space Setup scans a space mesh, extracts floor and ceiling height, walls and objects, then lets the user correct them. Floors and walls are 2D anchors with Bounded2D/Boundary2D. Tables and couches also carry Bounded3D volumes. The Depth API is used for per-frame dynamic occlusion and the Scene data for collisions.
+  SRC: https://developers.meta.com/horizon/documentation/unity/unity-scene-build-mixed-reality/ ; https://developers.meta.com/horizon/blog/mesh-depth-api-meta-quest-3-developers-mixed-reality/
+  APPLIES: S5 target model: one locked floor plane with a polygon boundary, desk and seat planes as rectangles, obstacles as boxes. On a phone this is best approximated by the 2.5D grid plus boxes, not a full mesh.
+
+# Floor via dominant plane / RANSAC (verified=true)
+  CLAIM: A floor-extraction pipeline voxel-downsamples the RGB-D cloud, runs RANSAC for the main plane, and classifies points within a distance threshold as floor and the rest as obstacles. Open3D segment_plane exposes distance_threshold, ransac_n and num_iterations.
+  SRC: https://arxiv.org/html/2401.17056 ; https://www.open3d.org/docs/release/python_api/open3d.geometry.PointCloud.html (search snippet)
+  APPLIES: With ARCore gravity the floor normal is known, so the plane model has one degree of freedom (height). A 1D histogram/mode is the O(N) equivalent of 1-point RANSAC. Full 3-point RANSAC is unnecessary and slower.
+
+# ARCore Scene Semantics not usable indoors (verified=true)
+  CLAIM: ARCore Scene Semantics 'Supports outdoor scenes only and is not intended for indoor use cases' (labels: sky, building, tree, road, and similar).
+  SRC: https://developers.google.com/ar/develop/scene-semantics
+  APPLIES: No built-in ARCore floor, chair or desk labels for a classroom. Semantic help would need a custom Inference Engine model.
+
+# Inference Engine models (verified=false)
+  CLAIM: Unity publishes MiDaS monocular depth for Inference Engine and Sentis on Hugging Face (unity/inference-engine-midas, unity/sentis-MiDaS).
+  SRC: https://huggingface.co/unity/inference-engine-midas (search result only)
+  APPLIES: Optional and heavy. A small indoor floor or furniture segmentation model could veto non-floor pixels, but it costs GPU time and model validation. Low priority next to the geometric fixes.
+
+=================== RESEARCH meshing-obstacles-mobile ===================
+
+--- RECOMMENDATIONS ---
+
+* [high impact / medium effort] Tier A default: build Quest-like obstacle volumes from ARCore raw depth with a 2.5D occupancy/height grid
+  Extend RoomSurfaceMap with an 'above-floor' column grid on the same 5 cm cells, relative to the fused floor level. For each confident raw-depth point, which DepthScanSource already computes including the non-horizontal ones it currently discards, add a hit to the column if it lies between floor+4 cm and about 2.0 m, and track robust height statistics (e.g. an 85-95th percentile top per column). Use the existing ray carving the same way: a ray that passes through a column below its endpoint height is free-space evidence for that column. Process the full depth image (it is small) in a Burst IJobParallelFor instead of the 40-column grid. Then take connected components of occupied columns, remove small or noisy islands, fit a minimum-area oriented rectangle with rotating calipers, and snap its yaw to the room's dominant axis. Emit an ObstacleVolume (pose, size, classification) that mirrors AR Foundation's XRBoundingBox and BoundingBoxClassifications. Classification heuristics: a box whose top matches a scanned SurfaceLevel region is TABLE (tabletop plane plus a volume down to the floor, as Quest does); about 0.4-0.55 m with a small footprint is SEAT/OTHER; the rest is OTHER. Cells under a box get carved out of the floor grid, and floor rendering and placement skip them. This directly fixes 'floor grid drawn over chair legs' and 'no obstacle recognition' (S4, S5).
+  RISKS: Thin chair legs and desk frames give few confident raw-depth pixels, so footprints may be under-estimated. Use a dilation or 'support' rule, where a tabletop level plus a few leg hits imply a full box. Depth noise near the floor on shiny tiles can create false low obstacles, so require a minimum height (about 8-10 cm) plus multi-frame agreement. Moved chairs need decay (log-odds clamping and free-space carving).
+
+* [high impact / small effort] Keep and strengthen depth-based per-pixel occlusion and collision (Depth Lab style) for dynamic things
+  The static scan cannot know about students walking by or chairs moved later. Keep AROcclusionManager (ARShaderOcclusion does not support ARCore phones) and keep the ARToolkitSurfaceDepth trick that replaces noisy measured depth near known surfaces. Build that replacement from the fused floor and obstacle model, not from single levels, so the bottoms of placed objects are not cut by floor noise (S2). Optionally port Depth Lab's GPU-displaced depth-mesh collider for physics near the user, and use raw depth plus confidence, not smoothed depth, for geometry decisions.
+  RISKS: Depth arrives with latency and at low resolution, so edges shimmer. Temporal smoothing adds lag. On devices without depth this tier simply disappears.
+
+* [high impact / medium effort] Present the result like Quest Space Setup: clean polygons and boxes, frozen after the scan
+  Visualise the scan with abstraction instead of the raw noisy cell grid. During scanning, show coverage cells. After a 'finish scan' step, switch to (a) a floor outline polygon from the floor cells: morphological close/open, an alpha-shape or marching-squares contour, Douglas-Peucker simplification, and edges snapped to the dominant room axis (tile lines give a strong axis); (b) tabletop polygons from SurfaceLevels; (c) translucent, labelled obstacle boxes with wire edges. Freeze and anchor the model (ARAnchor per level or box) so it stops creeping. Allow manual edit: drag box corners, delete a box, or add one by tapping two corners and a height. This mirrors Quest's manual Space Setup fallback and is also the Tier C fallback. This removes ragged edges, holes and islands (S3) from what students see, while the underlying evidence stays probabilistic.
+  RISKS: Aggressive simplification can hide real gaps (such as a door or a column). Keep a 'show raw scan' debug toggle, and let the teacher re-scan areas.
+
+* [medium impact / large effort] Optional Tier A+ (high-end phones): sparse TSDF voxel fusion from raw depth for a GLOBAL_MESH-like mesh
+  Add a voxel-hashing TSDF: 4-5 cm voxels (finer adds nothing at ARCore's depth resolution and noise), 16^3 chunks in a NativeParallelHashMap, and a truncation band of about 3 voxels. Integrate each confident raw-depth pixel along its ray in Burst, weighted by confidence and inverse distance squared, and skip frames during fast motion. Mesh only dirty chunks with Surface Nets or Marching Cubes at 2-5 Hz on a job thread, and upload with the Mesh API or MeshData. The GPU route can adapt QuestRoomScan's MIT-licensed compute kernels (Unity 6 URP ready) by replacing the Quest depth input with ARCore depth textures and intrinsics, and by shrinking the volume (it uses about 179 MB GPU at 256^3 without triplanar). Obstacle boxes can then come from the TSDF (occupied voxels above the floor) instead of the 2.5D grid. Gate this on device tier: RAM, GPU, and a measured frame time.
+  RISKS: Thermal throttling and battery drain on phones in long lessons. ARCore pose drift and loop-closure jumps smear the TSDF, so anchor chunks or re-integrate. Mesh quality on textureless floors stays poor, because raw depth is sparse there. Many more lines of code to maintain than the 2.5D grid.
+
+* [medium impact / medium effort] Tier B fallback for phones without the Depth API: coarse monocular depth via Unity Inference Engine
+  First change ARCoreSettings Depth from Required to Optional; today the app cannot even install on non-depth phones from Play. Then run Depth-Anything-V2-Metric-Hypersim-Small or V2-Small (Apache-2.0), or MiDaS small (MIT, available as unity/inference-engine-midas), at a low input size (about 252-256 px). Use BackendType.GPUCompute on Vulkan and ScheduleIterable split over frames, at 2-5 Hz. Fit scale and shift per frame by least squares against ARCore feature points and plane hits, because relative-depth models need metric alignment. Feed only the coarse obstacle occupancy grid (Tier A pipeline) with low weights; never use it for per-pixel occlusion. Float16 quantisation only helps download size, not speed.
+  RISKS: No NPU in Unity Inference Engine, so latency on mid-range GPUs is likely 100-300 ms (estimate; must be profiled per device). Adds about 50-100 MB to the app (float) or about 25-50 MB (fp16). Scale alignment fails when there are few feature points, which happens on the same textureless floors. The Base/Large DA-V2 models are CC-BY-NC and must not ship.
+
+* [low impact / medium effort] Optional semantic labelling at a low rate (floor vs furniture vs person)
+  If geometry-only heuristics are not enough, add a small segmentation model at about 1-2 Hz. Use it to reject 'person' pixels from the static scan, boost floor evidence on textureless tiles, and label boxes (chair, table). Use permissively licensed weights: an ADE20K MobileNetV3 LR-ASPP/DeepLab checkpoint or PP-MobileSeg, after checking each checkpoint's licence. Import via ONNX or LiteRT into Inference Engine. Avoid NVIDIA SegFormer weights (non-commercial). Treat Ultralytics or Unity YOLO models (GPL/AGPL) as an opt-in add-on only. As a cost reference, MediaPipe DeepLab-v3 at 257 px takes about 100 ms even on a Pixel 6 GPU.
+  RISKS: Licence contamination if the wrong checkpoint is used. Extra GPU load competes with the camera and rendering. Class mistakes (a desk seen as floor) could corrupt the scan unless it is used only as a soft prior.
+
+* [medium impact / small effort] Do not adopt Niantic NSDK or ARCore Extensions for this goal (revisit NSDK only as a separate experiment)
+  NSDK has the closest feature set (ML depth on RGB phones, meshing with semantic filtering, navmesh). But it currently supports only Unity 6000.0.74f1 with AR Foundation 6.3 to 6.4.1, requires removing Vulkan, needs token/enterprise authentication, costs about $0.80-1.00 per MAU above 100 MAU, and has a history of AR Foundation 6 mobile incompatibility. ARCore Extensions is AR Foundation 6 compatible, but its Scene Semantics is outdoor-only and it has no indoor meshing. Use its Recording and Playback only as a testing aid, if needed. Keep the toolkit's own IScanFrameSource abstraction so an NSDK depth source could be plugged in later on a separate branch.
+  RISKS: Building our own means we own the reconstruction quality. If Niantic later supports Unity 6.x mainline and changes pricing for education, re-evaluate.
+
+* [high impact / small effort] Fallback ladder and device tiering
+  Tier A (Depth API supported; most ARCore phones): raw depth plus confidence feeding floor/level fusion plus the 2.5D obstacle grid, boxes and polygons, with per-pixel occlusion. Tier A+ (high-end, profiled): add the sparse TSDF mesh. Tier B (no Depth API, Depth set to Optional): feature points plus ARCore planes (the existing FeaturePointScanSource and ArcorePlanePriors), optional monocular depth at 2-5 Hz for coarse obstacles, no depth occlusion. Tier C (weak devices or failed scan): planes only, plus manual obstacle boxes placed by the teacher (tap two corners and set a height) and a manual floor outline. Pick the tier at runtime from the occlusion descriptor, depth-arrival checks (already in DepthScanSource), SystemInfo (RAM, compute support) and a short frame-time probe. Show the tier in the UI so teachers know what to expect.
+  RISKS: Several code paths to test. Needs a device lab (at least one low-end, mid-range and high-end ARCore phone, plus one without Depth) and recorded sessions for regression tests.
+
+--- FINDINGS ---
+
+# Niantic Spatial SDK (NSDK, formerly Lightship ARDK) - Unity / AR Foundation support (verified=true)
+  CLAIM: The current NSDK setup page supports only Unity LTS and Unity 6000.0.74f1 (it says other 6000.0.x versions can conflict). With Unity 6000.0.x it needs AR Foundation 6.3.0 or newer, and 6.4.1 is recommended. On Android it needs API 24+ and IL2CPP with ARMv7+ARM64, and you must uncheck Auto Graphics API and remove Vulkan. You have to sign in or supply a developer/access token before building. The 4.1.0 release notes say the supported Unity version was moved to 6000.0.74f1.
+  SRC: https://www.nianticspatial.com/docs/nsdk/setup/ ; https://nianticspatial.com/docs/nsdk/release_notes/
+  APPLIES: This project uses Unity 6000.6.0f1 with AR Foundation / ARCore 6.6.2 and Vulkan first, then GLES3. None of that is on NSDK's supported matrix. Adopting NSDK would mean downgrading the editor to 6000.0.74f1, pinning AR Foundation to about 6.4.1, and dropping Vulkan. That is a large, risky change for a toolkit.
+
+# Lightship ARDK 3.15/3.16 and AR Foundation 6 on mobile (verified=false)
+  CLAIM: Search snippets of the ARDK 3.15 and 3.16 release notes say ARDK is not fully compatible with AR Foundation 6 on mobile, that the Lightship Occlusion Extension may not work, and they recommend AR Foundation 5.2.0 even on Unity 6. A community thread from Oct-Dec 2024 confirms there was no Unity 6 support then. Versions before 3.13 got only a 6-month support window, ending Nov 1 2025.
+  SRC: https://community.nianticspatial.com/t/unity-6-arfoundation-6-support/4897 (opened) ; https://lightship.dev/docs/ardk/release_notes/release3.16/ (redirected, snippet only)
+  APPLIES: Niantic has a history of lagging Unity/AR Foundation releases by a year or more. A toolkit that tracks Unity 6.x releases would be blocked repeatedly.
+
+# NSDK 4.0 licensing / authentication changes (verified=true)
+  CLAIM: The NSDK 4.0 migration guide says API-key authentication is no longer supported and Enterprise Authentication must be configured. SharedAR stopped working on May 1, 2026, and APIs marked Obsolete must be removed. Search snippets say NSDK 4.0 went live on April 16, 2026, and that ARDK 3.17 features except Shared AR work until Feb 28, 2027.
+  SRC: https://www.nianticspatial.com/docs/nsdk/migration_guide/ (opened) ; https://x.com/NianticSpatial/status/2044793168936235288 (snippet)
+  APPLIES: Every student or teacher build would need Niantic account tokens. That adds friction for an open education toolkit and ties the app to Niantic's service.
+
+# Niantic pricing (verified=true)
+  CLAIM: Niantic developer relations acknowledged a pricing change in a community thread (Jan-Apr 2025): apps over 100 MAU pay about $0.80-1.00 per MAU per month, whatever features they use (meshing included). Before that it was free under 50k MAU, and as of April 2025 the pricing was still described as under revision. A search snippet of the pricing page lists $0 for 1-100 MAU, $1.00 per MAU for 100-1,000, and $0.80 per MAU for 1,000-5,000. The official pricing page I opened only showed Scaniverse plans.
+  SRC: https://community.nianticspatial.com/t/pricing-changes-of-lightship/5134 (opened) ; https://www.nianticspatial.com/resources/pricing (opened, SDK prices not shown)
+  APPLIES: A classroom with 30 students across a few schools passes 100 MAU quickly. At about $1 per student per month, NSDK is not viable as the default depth/meshing backend.
+
+# NSDK meshing and semantic features (verified=false)
+  CLAIM: NSDK meshing builds a dynamic triangle mesh from depth data and device tracking, split into mesh blocks that update independently. Mesh Filtering uses Scene Segmentation allow/block lists (for example ground or sky) to decide what goes in the final mesh. The docs also cover a Navigation Mesh for agents and 20 semantic channels. Search snippets say 'artificial_ground' covers flooring, carpets and rugs, and that depth/meshing uses an ML depth model on RGB-only phones (3 GB RAM or more).
+  SRC: https://www.nianticspatial.com/docs/nsdk/features/meshing/ (opened) ; https://lightship.dev/docs/ardk/3.9/features/semantics/ (snippet)
+  APPLIES: Functionally this is the closest thing to Quest-like room meshing on non-ToF phones, but it is blocked by version, Vulkan, authentication and pricing constraints. Its design (mesh blocks, semantic filtering, navmesh from a ground mesh) is a good blueprint to copy. Meshing and filtering were confirmed on the page I opened; the channel list and RGB-only claims are snippet-only.
+
+# ARCore Extensions for AR Foundation (verified=true)
+  CLAIM: Full AR Foundation 6 / Unity 6 support arrived in v1.48.0 (v1.47 was beta). v1.53.0 fixed a Unity 6.3 compile error. The latest release, v1.56.0, raises ARCore's targetSdkVersion to API 37 (breaking change). Extensions adds Geospatial/VPS, Cloud Anchors, Streetscape Geometry, Scene Semantics, Recording and Playback, camera config filtering and Environmental HDR. The features page mentions nothing for indoor meshing or obstacle detection.
+  SRC: https://github.com/google-ar/arcore-unity-extensions/releases ; https://developers.google.com/ar/develop/unity-arf/features
+  APPLIES: It is compatible, but it gives no indoor floor or obstacle understanding. The only useful part here is session Recording and Playback, for repeatable classroom test captures.
+
+# ARCore Scene Semantics (verified=true)
+  CLAIM: Scene Semantics labels pixels with outdoor classes (sky, building, tree, road, sidewalk, vehicle, person and more). The docs describe outdoor scenes and do not mention indoor floor, furniture or walls. 'Not all ARCore-compatible devices support the Scene Semantics API', and output is an R8 texture.
+  SRC: https://developers.google.com/ar/develop/unity-arf/scene-semantics
+  APPLIES: Not usable for classroom floor/desk/chair segmentation.
+
+# ARCore XR Plugin feature gaps (verified=true)
+  CLAIM: The ARCore XR Plugin does not support Meshing, Bounding box detection, Object tracking, Body tracking or Participants. It supports planes, point clouds, raycasts, anchors and occlusion (environment depth).
+  SRC: https://docs.unity3d.com/Packages/com.unity.xr.arcore@6.2/manual/index.html
+  APPLIES: ARMeshManager and ARBoundingBoxManager will never fire on ARCore phones, so obstacle volumes and room meshing have to be built in the toolkit from depth frames.
+
+# AR Shader Occlusion on phones (verified=true)
+  CLAIM: AR Foundation 6.4 docs say the AR Shader Occlusion component (global depth texture plus hard/soft occlusion keywords) 'is currently only supported for Meta Quest and Android XR devices'.
+  SRC: https://docs.unity3d.com/Packages/com.unity.xr.arfoundation@6.4/manual/features/occlusion/shader-occlusion.html
+  APPLIES: On ARCore phones occlusion must keep going through AROcclusionManager / ARCameraBackground or the toolkit's own shaders (as ARToolkitSurfaceDepth.shader already does). Soft occlusion from ARShaderOcclusion is not available on phones.
+
+# ARCore Depth API characteristics (verified=true)
+  CLAIM: Depth comes from depth-from-motion on the single RGB camera; no ToF sensor is needed. Range is 0-65 m, and it is most accurate at 0.5-5 m. Depth only appears once the user moves the device. Raw Depth is more accurate but sparse, comes with a confidence image (0 where there is no estimate), costs about half as much compute as full depth, and is recommended for 3D reconstruction, measurement and shape detection. Textured regions get higher confidence than blank ones. Depth is off by default and 'Required' by default in the ARCore settings; choose 'Optional' if the app has a graceful fallback.
+  SRC: https://developers.google.com/ar/develop/depth ; https://developers.google.com/ar/develop/unity-arf/depth/raw-depth ; https://developers.google.com/ar/develop/unity-arf/depth/developer-guide
+  APPLIES: Low confidence on uniform shiny tiles and blank floor areas directly explains the patchy floor coverage (S3). Raw depth plus confidence is the right input for obstacle occupancy and fusion. Depth resolution is not given in the docs and is usually low (about 160x120 on many devices, not verified).
+
+# Project setting: ARCore Depth is Required (verified=true)
+  CLAIM: In Assets/XR/Settings/ARCoreSettings.asset, m_Requirement is 0 and m_Depth is 0. In the installed ARCore package's ARCoreSettings.cs, enum Requirement { Required, Optional } makes 0 = Required, so both ARCore and Depth are Required.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\XR\Settings\ARCoreSettings.asset ; C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\Editor\ARCoreSettings.cs
+  APPLIES: Google Play filtering will stop the app installing on phones without Depth support. The FeaturePointScanSource fallback, and any monocular-depth fallback, only reaches those phones if Depth is switched to Optional. This has to be decided explicitly for the fallback ladder.
+
+# Project rendering / platform settings (verified=true)
+  CLAIM: Android Graphics APIs are set manually to Vulkan first, then OpenGLES3 (m_APIs 150000000b000000). Min SDK is 29, target architecture is ARM64, and the editor is 6000.6.0f1. Mobile_Renderer already includes ARBackgroundRendererFeature and ARCommandBufferSupportRendererFeature, which ARCore 6.6.0 requires when Vulkan is primary.
+  SRC: C:\Unity\ErasmusARToolkit\ProjectSettings\ProjectSettings.asset ; C:\Unity\ErasmusARToolkit\Assets\Settings\Mobile_Renderer.asset ; C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arcore@48fb51f3ca76\CHANGELOG.md
+  APPLIES: Compute shaders (TSDF, Inference Engine GPUCompute) are available on Vulkan/GLES3.1. The GLES-only requirement of NSDK conflicts with this setup.
+
+# Current toolkit scanning architecture (verified=true)
+  CLAIM: DepthScanSource samples a 40 x (up to 96) screen grid from the raw depth image (falling back to smoothed depth) and keeps pixels with confidence of 100 or more. It checks the depth-image mapping against ARCore depth hit tests and flags each point as horizontal or not using neighbour normals. RoomSurfaceMap is a 2.5D model: horizontal SurfaceLevels with 5 cm cells, log-odds hits, and misses from rays that pass a level height and end beyond it, with ARCore planes as priors and a 0.3-4.5 m range. There is no representation of occupied space above the floor. The only 'volume' is the optional table occluder built in SurfaceMeshBuilder. ARToolkitSurfaceDepth.shader writes the scanned surface's depth where measured depth lies within _PullHeight of the surface, so chair legs keep their real depth.
+  SRC: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\DepthScanSource.cs ; C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomSurfaceMap.cs ; C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Shaders\ARToolkitSurfaceDepth.shader
+  APPLIES: The existing log-odds and ray-carving design extends naturally into a 2.5D obstacle occupancy / height map (points above floor = occupied, rays through the column = free). That gives Quest-like obstacle boxes without a full 3D mesh. Non-horizontal depth points (chair legs, desk sides, walls) are computed today but thrown away, which is exactly the obstacle evidence.
+
+# Depth Lab (depth-based interaction without meshing) (verified=true)
+  CLAIM: ARCore Depth Lab is Apache-2.0 and no longer actively maintained (it points to XR Blocks). It targets Unity 2020.3.6f1 and AR Foundation 4.2. Features include oriented 3D reticles, a depth mesh collider (a GPU-displaced template grid built from the depth texture), raw point cloud visualization and point cloud fusion, avatar locomotion on uneven terrain, and occlusion (legacy branch).
+  SRC: https://github.com/googlesamples/arcore-depth-lab
+  APPLIES: Its screen-space depth mesh collider and per-pixel occlusion ideas port easily. They handle dynamic obstacles (people, moved chairs) that a static scan cannot, and they are a good complement to scanned boxes. The code itself needs porting to AR Foundation 6 / URP 17.
+
+# Open-source GPU TSDF in Unity 6 (QuestRoomScan) (verified=true)
+  CLAIM: QuestRoomScan (MIT, now genesisinteractive/QuestRoomScan) is a Unity 6 / URP 17 package that does GPU TSDF integration and Surface Nets meshing in compute shaders with zero CPU readback. The default volume is 256^3 with the TSDF in RG8_SNorm (about 32 MB). The GPU budget is about 179 MB without triplanar texturing and about 419 MB with it. Meshing runs 8 times per second, drawn with one RenderPrimitivesIndirect call. It also does YOLO/Sentis object detection with GPU NMS. It depends on the Quest depth sensor, MRUK, Meta OpenXR and Meta Core SDK.
+  SRC: https://github.com/genesisinteractive/QuestRoomScan
+  APPLIES: The TSDF and Surface Nets compute kernels are MIT and Unity 6 URP ready, so they are a head start for a phone TSDF. The depth input path would need rewriting for ARCore CPU/GPU depth images and intrinsics, and the volume and memory should shrink a lot (4-5 cm voxels; triplanar off) for mid-range phones.
+
+# TSDF on phones - feasibility (verified=false)
+  CLAIM: MobileFusion (Ondruska, Kohli, Izadi, 2015) ran real-time volumetric TSDF fusion on off-the-shelf phones at 25 Hz from RGB-only stereo depth, with about 1.5 cm error on object-scale scans.
+  SRC: https://www.microsoft.com/en-us/research/publication/mobilefusion-real-time-volumetric-surface-reconstruction-dense-tracking-mobile-phones/ (search summary only)
+  APPLIES: Even 2015 phones could do TSDF fusion. With ARCore's low-resolution depth (about 20k pixels per frame), CPU Burst integration into a sparse voxel hash at 4-5 cm voxels should cost roughly 1 ms per frame on current mid-range phones. That is my engineering estimate, not a measurement.
+
+# Depth Anything V2 licences / sizes (verified=true)
+  CLAIM: Depth-Anything-V2-Small (24.8M params) is Apache-2.0. Base (97.5M), Large (335.3M) and Giant (1.3B) are CC-BY-NC-4.0. Depth-Anything-V2-Metric-Hypersim-Small (indoor, max depth 20 m, 24.8M) is Apache-2.0.
+  SRC: https://github.com/DepthAnything/Depth-Anything-V2 ; https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Hypersim-Small
+  APPLIES: Only the Small variants may ship in a toolkit that might be used commercially. The indoor metric Small model is the natural candidate for a no-Depth-API fallback.
+
+# Monocular depth latency on phones (reference numbers) (verified=true)
+  CLAIM: On Qualcomm AI Hub, Depth Anything V2 at 518x518 on the NPU (float ONNX Runtime) takes 18.0 ms on Snapdragon 8 Elite Gen 5, 19.0 ms on 8 Elite, 28.1 ms on 8 Gen 3 and 62.8 ms on 8 Gen 1; the float model is 94.3 MB. MiDaS_small at 256x256 has 16.6M params, is 63.2 MB float / 16.9 MB w8a8, and is MIT-licensed. For comparison, MediaPipe DeepLab-v3 segmentation at 257x257 takes 103 ms on a Pixel 6 GPU and 124 ms on its CPU.
+  SRC: https://huggingface.co/qualcomm/Depth-Anything-V2 ; https://huggingface.co/qualcomm/Midas-V2 ; https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter
+  APPLIES: These are NPU or TFLite GPU figures. Unity Inference Engine cannot use the NPU, so on mid-range Mali/Adreno GPUs expect roughly 100-300 ms for DA-V2-Small at about 256 px and tens of ms for MiDaS small (estimate). That means 2-5 Hz background inference only, not per-frame occlusion.
+
+# Unity Inference Engine 2.6 on Android (verified=true)
+  CLAIM: The installed Inference Engine 2.6.1 docs list CPU (Burst), GPUCompute (generally fastest; DirectML only on DX12) and GPUPixel (when compute is unsupported) backends; there is no NPU delegate. Quantization (Float16/Uint8) shrinks storage and memory 'without significantly affecting inference speed' because weights are converted back at runtime. ScheduleIterable splits inference across frames. LiteRT (TFLite), ONNX (opset up to 25) and PyTorch .pt2 import are supported.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.ai.inference@9a123aee5df7\Documentation~\create-an-engine.md ; ...\quantize-a-model.md ; ...\split-inference-over-multiple-frames.md ; ...\whats-new.md
+  APPLIES: Use GPUCompute on Vulkan, low input resolution, and split inference over frames. Do not expect int8 speedups. Qualcomm AI Hub TFLite exports can be imported directly.
+
+# Unity-validated models on Hugging Face (verified=true)
+  CLAIM: The Unity org publishes validated .sentis models, including inference-engine-midas (MIT, depth) and inference-engine-yolo (GPL-3.0; YOLOv8, v9, 11 and 12 in nano/small sizes). No Depth Anything or indoor semantic segmentation model is published there.
+  SRC: https://huggingface.co/unity ; https://huggingface.co/unity/inference-engine-yolo ; https://huggingface.co/unity/inference-engine-midas/tree/main
+  APPLIES: MiDaS is a drop-in fallback depth model. The YOLO models (COCO classes: chair, dining table, couch, bed, tv, laptop, person) could label obstacle boxes, but GPL/AGPL (Ultralytics) terms spread to the toolkit, so treat them as optional or separately licensed.
+
+# Segmentation model licences (verified=false)
+  CLAIM: Search results say NVIDIA's SegFormer ADE20K weights (e.g. nvidia/segformer-b0-finetuned-ade-512-512) are under the NVIDIA Source Code License, non-commercial / research only. ADE20K has 150 classes that include floor, wall, ceiling, chair, table and desk.
+  SRC: https://github.com/NVlabs/SegFormer/blob/master/LICENSE (snippet) ; https://huggingface.co/nvidia/segformer-b0-finetuned-ade-512-512 (snippet)
+  APPLIES: Avoid SegFormer weights. If floor/furniture segmentation is needed, pick a permissively licensed ADE20K model (e.g. torchvision-style LR-ASPP/DeepLab MobileNetV3 or PaddleSeg PP-MobileSeg; check each checkpoint's licence) or train on permissively licensed data.
+
+# Meta Quest scene representation (UX to mimic) (verified=true)
+  CLAIM: Quest's scene model is a set of labelled anchors. Room structure is 2D planes (FLOOR, CEILING, WALL_FACE, INVISIBLE_WALL_FACE, DOOR_FRAME, WINDOW_FRAME, WALL_ART). Contents are 3D volumes (bounding boxes) for LAMP, PLANT, SCREEN, COUCH, TABLE, BED, STORAGE and OTHER. COUCH, TABLE, BED and STORAGE also carry a 2D plane (seat, tabletop, shelf). GLOBAL_MESH is a triangle mesh of the space captured during Space Setup, a guided system flow with a manual fallback.
+  SRC: https://developers.meta.com/horizon/documentation/unity/unity-scene-overview/ ; https://developers.meta.com/horizon/documentation/unreal/unreal-scene-supported-semantic-labels/
+  APPLIES: The Quest-quality look comes mostly from abstraction, not mesh quality: a clean floor polygon, straight wall lines, and axis-aligned boxes for furniture, where a desk is a tabletop plane plus a box down to the floor. The toolkit can copy this from its SurfaceLevels (tabletops) plus an above-floor occupancy grid (box footprints and heights).
+
+# AR Foundation types for boxes and plane labels (verified=true)
+  CLAIM: The installed AR Foundation 6.6 changelog lists XRBoundingBox, XRBoundingBoxBuilder, BoundedPlaneBuilder, BoundingBoxClassifications (with Keyboard, Mouse and Laptop added) and PlaneClassifications (with InnerWallFace added). ARCore does not produce any of these.
+  SRC: C:\Unity\ErasmusARToolkit\Library\PackageCache\com.unity.xr.arfoundation@d57b0b4d336a\CHANGELOG.md
+  APPLIES: The toolkit's own phone-side obstacle boxes and labelled surfaces can reuse these enums and shapes (pose, size, classification). The API then matches Quest and Android XR, and a future headset build could consume real ARBoundingBoxes.
+
+# ARCore Depth API device coverage (verified=false)
+  CLAIM: A search snippet says about 94% of Google's active device listings support the Depth API (as of the 2021-era announcements).
+  SRC: https://developers.google.com/ar/devices (snippet, not opened)
+  APPLIES: Most ARCore phones in schools should have depth-from-motion, so a depth-based obstacle scan can be the default tier. Non-depth phones still need a fallback if the Depth requirement is made Optional.

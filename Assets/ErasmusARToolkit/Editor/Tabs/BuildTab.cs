@@ -17,6 +17,7 @@ namespace Erasmus.ARToolkit.Editor
         readonly Label outputFile;
         readonly HelpBox noScenes;
         readonly VisualElement sceneList;
+        readonly HelpBox sceneHint;
         readonly HelpBox platformHint;
         readonly HelpBox problem;
         readonly Button buildButton;
@@ -31,6 +32,7 @@ namespace Erasmus.ARToolkit.Editor
             outputFile = EditorUi.Q<Label>(Root, "output-file");
             noScenes = EditorUi.Q<HelpBox>(Root, "no-scenes");
             sceneList = EditorUi.Q<VisualElement>(Root, "scene-list");
+            sceneHint = EditorUi.Q<HelpBox>(Root, "scene-hint");
             platformHint = EditorUi.Q<HelpBox>(Root, "platform-hint");
             problem = EditorUi.Q<HelpBox>(Root, "problem");
             buildButton = EditorUi.Q<Button>(Root, "build");
@@ -68,10 +70,14 @@ namespace Erasmus.ARToolkit.Editor
             var scenes = BuildRunner.GetScenes();
             EditorUi.SetShown(noScenes, scenes.Length == 0);
             sceneList.Clear();
-            foreach (var scene in scenes)
+            for (var i = 0; i < scenes.Length; i++)
             {
-                sceneList.Add(new Label("• " + scene));
+                sceneList.Add(new Label("• " + scenes[i] + (i == 0 ? "  (starts on the phone)" : string.Empty)));
             }
+
+            var hint = BuildPaths.FirstSceneHint(scenes);
+            sceneHint.text = hint ?? string.Empty;
+            EditorUi.SetShown(sceneHint, hint != null);
 
             platformHint.text = Platform == BuildPlatform.Android
                 ? "Connect an ARCore-supported phone with USB debugging on for 'Build And Run'. " +

@@ -11,6 +11,7 @@
         <ui:Label class="section-title" text="Scenes" />
         <ui:HelpBox name="no-scenes" text="No scenes in Build Settings." message-type="Warning" />
         <ui:VisualElement name="scene-list" class="scene-list" />
+        <ui:HelpBox name="scene-hint" message-type="Warning" />
 
         <ui:Label class="section-title" text="Build" />
         <ui:HelpBox name="platform-hint" message-type="Info" />

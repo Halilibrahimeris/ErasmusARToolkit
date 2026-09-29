@@ -3,6 +3,7 @@
     "rootNamespace": "Erasmus.ARToolkit.Tests",
     "references": [
         "Erasmus.ARToolkit.Runtime",
+        "Erasmus.ARToolkit.Tests.Support",
         "Erasmus.ARToolkit.Editor",
         "Erasmus.ARToolkit.Bootstrap.Editor",
         "UnityEngine.TestRunner",

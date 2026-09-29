@@ -7,33 +7,41 @@ namespace Erasmus.ARToolkit
     /// One horizontal surface height of the room (the floor, the table tops, the chair seats...) and what
     /// the scan knows about every 5 cm cell at that height. Cells live in 32 x 32 chunks that are made on
     /// first use, so a level costs memory only where the camera looked. The height starts at the value
-    /// ARCore (or the scan) found and is corrected by the depth points that land on the surface.
+    /// ARCore (or the scan) found; <see cref="RoomSurfaceMap"/> corrects it from the depth points on the
+    /// surface and from the planes ARCore detects at that height.
     /// </summary>
     public sealed class SurfaceLevel
     {
-        /// <summary>Height samples needed before the level may carve cells (its height is trusted).</summary>
+        /// <summary>Depth observations needed before the level may carve cells (its height is trusted).</summary>
         public const int ConfirmSamples = 30;
 
-        /// <summary>Points this far (meters) above or below the starting height count toward the height estimate.</summary>
-        public const float HeightWindow = HeightBinRadius * HeightBinSize;
+        /// <summary>
+        /// Depth points this far (meters) above or below the height can move it. Until the height is
+        /// confirmed, a camera ray must end this much farther past the level to carve it.
+        /// </summary>
+        public const float HeightWindow = 0.15f;
 
-        const float HeightBinSize = 0.01f;
-        const int HeightBinRadius = 15;
-        const int PeakHalfWidth = 2;
-        const double SeedSamples = 20.0;
+        /// <summary>A detected plane this close (meters) to the height is a plane of this surface.</summary>
+        const float PlaneNear = 0.05f;
+
         const int MaxGridCells = 1 << 20;
+        const float CellArea = RoomSurfaceMap.CellSize * RoomSurfaceMap.CellSize;
 
         readonly Dictionary<Vector2Int, SurfaceChunk> chunks = new Dictionary<Vector2Int, SurfaceChunk>();
-        readonly double[] binCounts = new double[HeightBinRadius * 2 + 1];
-        readonly double[] binSums = new double[HeightBinRadius * 2 + 1];
-        double sampleCount;
+        readonly List<Vector2> planeSamples = new List<Vector2>();
+        HeightLock heightLock;
+        int confirmedCells;
+        int priorCells;
+        bool priorCellsCounted = true;
+        bool inPriorBatch;
         bool warnedTooLarge;
 
-        internal SurfaceLevel(int id, float seedHeight)
+        internal SurfaceLevel(int id, float seedHeight, int createdFrame = 0)
         {
             Id = id;
             SeedHeight = seedHeight;
             Height = seedHeight;
+            CreatedFrame = createdFrame;
         }
 
         /// <summary>Stays the same while the level exists (list positions change when levels merge).</summary>
@@ -42,12 +50,14 @@ namespace Erasmus.ARToolkit
         /// <summary>The height the level was created with.</summary>
         public float SeedHeight { get; }
 
-        /// <summary>Best estimate of the surface height in meters (world y).</summary>
+        /// <summary>Best estimate of the surface height in meters (y in the space of the map).</summary>
         public float Height { get; private set; }
 
-        public float SampleCount => (float)sampleCount;
+        /// <summary>Cells that depth itself confirmed as surface.</summary>
+        public float SampleCount => confirmedCells;
 
-        public bool IsConfirmed => sampleCount >= ConfirmSamples;
+        /// <summary>Depth points have shown where the surface is, so its height is trusted.</summary>
+        public bool IsConfirmed { get; private set; }
 
         /// <summary>Area of the shown cells after the last <see cref="StoreShown"/>, in square meters.</summary>
         public float ShownArea { get; private set; }
@@ -55,10 +65,82 @@ namespace Erasmus.ARToolkit
         /// <summary>Cells changed since the level was last drawn.</summary>
         internal bool IsDirty { get; private set; } = true;
 
+        /// <summary>The height the level is drawn at: <see cref="Height"/>, held steady (see <see cref="HeightLock"/>).</summary>
+        internal float DrawnHeight => heightLock.HasValue ? heightLock.Value : Height;
+
+        /// <summary>Area (square meters) of the cells that depth confirmed.</summary>
+        internal float ConfirmedArea => confirmedCells * CellArea;
+
+        /// <summary>Area (square meters) of the cells inside the planes ARCore detected.</summary>
+        internal float PlaneArea
+        {
+            get
+            {
+                if (!priorCellsCounted)
+                {
+                    priorCells = CountPriorCells();
+                    priorCellsCounted = true;
+                }
+
+                return priorCells * CellArea;
+            }
+        }
+
+        /// <summary>Height of the largest plane ARCore detected for this surface, if there is one.</summary>
+        internal float? PlaneHeight
+        {
+            get
+            {
+                float? height = null;
+                var largest = 0f;
+                for (var i = 0; i < planeSamples.Count; i++)
+                {
+                    var sample = planeSamples[i];
+                    if (sample.y > largest && Mathf.Abs(sample.x - Height) <= PlaneNear)
+                    {
+                        largest = sample.y;
+                        height = sample.x;
+                    }
+                }
+
+                return height;
+            }
+        }
+
+        /// <summary>The level is the floor the scan has picked.</summary>
+        internal bool IsFloor { get; set; }
+
+        /// <summary>Below the trusted floor: not drawn and not hit while the floor is trusted.</summary>
+        internal bool IsSuppressed { get; private set; }
+
+        /// <summary>Its points were seen through the floor: a reflection, not a surface.</summary>
+        internal bool IsGhost { get; private set; }
+
+        /// <summary>Drawn and used for placement.</summary>
+        internal bool IsUsable => !IsSuppressed && !IsGhost;
+
+        /// <summary>The height came from depth at least once (not only from a plane or the seed).</summary>
+        internal bool HasDepthHeight { get; private set; }
+
+        /// <summary>Head start of the cells inside a detected plane (see <see cref="SurfaceEvidence"/>).</summary>
+        internal float PriorWeight { get; private set; } = SurfaceEvidence.PriorWeight;
+
+        /// <summary>Frames in a row in which depth and the plane disagreed about the height.</summary>
+        internal int PlaneDisagreement { get; set; }
+
+        /// <summary>Hits on this level whose rays were checked against the floor above it.</summary>
+        internal float SeenCells { get; private set; }
+
+        /// <summary>Of <see cref="SeenCells"/>, those whose rays went through a solid cell of the floor above.</summary>
+        internal float ThroughCells { get; private set; }
+
+        /// <summary>Number of the frame (see <see cref="RoomSurfaceMap.FramesIntegrated"/>) the level was made in.</summary>
+        internal int CreatedFrame { get; }
+
         public CellState GetState(Vector2Int cell)
         {
             return TryGetCell(cell, out var chunk, out var index)
-                ? SurfaceEvidence.Classify(chunk.LogOdds[index], chunk.Prior[index])
+                ? SurfaceEvidence.Classify(chunk.LogOdds[index], chunk.Prior[index], PriorWeight)
                 : CellState.Unknown;
         }
 
@@ -82,112 +164,189 @@ namespace Erasmus.ARToolkit
 
         internal void MarkClean() => IsDirty = false;
 
-        /// <summary>Counts a point near this height toward the height estimate. False if it is too far from the seed.</summary>
-        internal bool AddHeightSample(float y)
+        internal void SetHeight(float height)
         {
-            var bin = Mathf.RoundToInt((y - SeedHeight) / HeightBinSize) + HeightBinRadius;
-            if (bin < 0 || bin >= binCounts.Length)
+            Height = height;
+        }
+
+        /// <summary>Depth points showed where the surface is.</summary>
+        internal void ConfirmHeight()
+        {
+            HasDepthHeight = true;
+            IsConfirmed = true;
+        }
+
+        /// <summary>Moves the drawn height toward <see cref="Height"/>. True (and dirty) when it changed.</summary>
+        internal bool UpdateDrawnHeight(float seconds)
+        {
+            if (!heightLock.Update(Height, seconds, PlaneHeight, IsFloor))
             {
                 return false;
             }
 
-            binCounts[bin] += 1.0;
-            binSums[bin] += y;
-            sampleCount += 1.0;
+            IsDirty = true;
             return true;
         }
 
-        /// <summary>
-        /// Height = mean of the samples around the most crowded height (a 5 cm window), so a smaller second
-        /// surface nearby does not pull the estimate. A level made from a drifted ARCore plane moves onto the
-        /// real surface next to it, where it merges with that surface's level.
-        /// </summary>
-        internal void RefreshHeight()
+        internal void SetPriorWeight(float weight)
         {
-            var bestCenter = HeightBinRadius;
-            var bestCount = -1.0;
-            for (var center = 0; center < binCounts.Length; center++)
+            if (!Mathf.Approximately(PriorWeight, weight))
             {
-                var count = WindowCount(center);
-                if (count > bestCount)
-                {
-                    bestCount = count;
-                    bestCenter = center;
-                }
+                PriorWeight = weight;
+                IsDirty = true;
             }
-
-            var sum = 0.0;
-            var weight = 0.0;
-            for (var bin = bestCenter - PeakHalfWidth; bin <= bestCenter + PeakHalfWidth; bin++)
-            {
-                if (bin >= 0 && bin < binCounts.Length)
-                {
-                    sum += binSums[bin];
-                    weight += binCounts[bin];
-                }
-            }
-
-            if (Mathf.Abs(bestCenter - HeightBinRadius) <= PeakHalfWidth)
-            {
-                sum += SeedHeight * SeedSamples;
-                weight += SeedSamples;
-            }
-
-            Height = weight > 0.0 ? (float)(sum / weight) : SeedHeight;
         }
 
-        double WindowCount(int center)
+        internal void SetSuppressed(bool value)
         {
-            var count = Mathf.Abs(center - HeightBinRadius) <= PeakHalfWidth ? SeedSamples : 0.0;
-            for (var bin = center - PeakHalfWidth; bin <= center + PeakHalfWidth; bin++)
+            if (IsSuppressed != value)
             {
-                if (bin >= 0 && bin < binCounts.Length)
-                {
-                    count += binCounts[bin];
-                }
+                IsSuppressed = value;
+                IsDirty = true;
             }
-
-            return count;
         }
 
-        internal void ApplyVote(Vector2Int cell, bool hit, float hitWeight)
+        internal void SetGhost(bool value)
+        {
+            if (IsGhost != value)
+            {
+                IsGhost = value;
+                IsDirty = true;
+            }
+        }
+
+        /// <summary>One more hit on this level was checked against the floor above it.</summary>
+        internal void NoteSeen(bool throughSolidCell, float weight)
+        {
+            SeenCells += weight;
+            if (throughSolidCell)
+            {
+                ThroughCells += weight;
+            }
+        }
+
+        internal void DecaySeen(float factor)
+        {
+            SeenCells *= factor;
+            ThroughCells *= factor;
+        }
+
+        internal void ApplyVote(Vector2Int cell, bool hit, float weight)
         {
             var key = SurfaceChunk.ChunkOf(cell);
             var chunk = GetOrCreateChunk(key);
             var index = SurfaceChunk.LocalIndex(cell, key);
-            chunk.LogOdds[index] = hit
-                ? SurfaceEvidence.AddHit(chunk.LogOdds[index], hitWeight)
-                : SurfaceEvidence.AddMiss(chunk.LogOdds[index]);
+            var before = chunk.LogOdds[index];
+            var after = hit ? SurfaceEvidence.AddHit(before, weight) : SurfaceEvidence.AddMiss(before, weight);
+            chunk.LogOdds[index] = after;
+            CountConfirmed(before, after);
             IsDirty = true;
         }
 
-        /// <summary>Marks cells <paramref name="firstX"/>..<paramref name="lastX"/> of one row as inside a detected plane.</summary>
-        internal void SetPriorRun(int row, int firstX, int lastX)
+        /// <summary>
+        /// Floor cells inside a detected plane that were carved before the floor was known start over:
+        /// what carved them were points below the floor, which a floor cannot have.
+        /// </summary>
+        internal void ForgiveCarvedPriors()
+        {
+            foreach (var chunk in chunks.Values)
+            {
+                for (var i = 0; i < SurfaceChunk.CellCount; i++)
+                {
+                    if (chunk.Prior[i] && chunk.LogOdds[i] < 0f)
+                    {
+                        chunk.LogOdds[i] = 0f;
+                        IsDirty = true;
+                    }
+                }
+            }
+        }
+
+        /// <summary>A plane ARCore detected at (about) this height, with the area of its cells.</summary>
+        internal void AddPlaneSample(float height, float area)
+        {
+            planeSamples.Add(new Vector2(height, area));
+        }
+
+        /// <summary>
+        /// Starts a new reading of the detected planes. Until <see cref="EndPriors"/> the cells are collected
+        /// on the side, so a reading that finds the same planes again changes nothing (and redraws nothing).
+        /// </summary>
+        internal void BeginPriors()
+        {
+            inPriorBatch = true;
+            planeSamples.Clear();
+            foreach (var chunk in chunks.Values)
+            {
+                System.Array.Clear(chunk.PriorNext, 0, SurfaceChunk.CellCount);
+            }
+        }
+
+        internal void EndPriors()
+        {
+            if (!inPriorBatch)
+            {
+                return;
+            }
+
+            inPriorBatch = false;
+            foreach (var chunk in chunks.Values)
+            {
+                var changed = false;
+                for (var i = 0; i < SurfaceChunk.CellCount && !changed; i++)
+                {
+                    changed = chunk.Prior[i] != chunk.PriorNext[i];
+                }
+
+                if (changed)
+                {
+                    System.Array.Copy(chunk.PriorNext, chunk.Prior, SurfaceChunk.CellCount);
+                    IsDirty = true;
+                    priorCellsCounted = false;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Marks cells <paramref name="firstX"/>..<paramref name="lastX"/> of one row as inside a detected
+        /// plane. Returns how many cells that are.
+        /// </summary>
+        internal int SetPriorRun(int row, int firstX, int lastX)
         {
             var chunkZ = row >> SurfaceChunk.Shift;
             var rowStart = (row - (chunkZ << SurfaceChunk.Shift)) * SurfaceChunk.Size;
             for (var chunkX = firstX >> SurfaceChunk.Shift; chunkX <= lastX >> SurfaceChunk.Shift; chunkX++)
             {
                 var chunk = GetOrCreateChunk(new Vector2Int(chunkX, chunkZ));
+                var target = inPriorBatch ? chunk.PriorNext : chunk.Prior;
                 var chunkStart = chunkX << SurfaceChunk.Shift;
                 var from = Mathf.Max(firstX, chunkStart) - chunkStart;
                 var to = Mathf.Min(lastX, chunkStart + SurfaceChunk.Size - 1) - chunkStart;
                 for (var x = from; x <= to; x++)
                 {
-                    chunk.Prior[rowStart + x] = true;
+                    target[rowStart + x] = true;
                 }
             }
 
-            IsDirty = true;
+            if (!inPriorBatch)
+            {
+                IsDirty = true;
+                priorCellsCounted = false;
+            }
+
+            return lastX - firstX + 1;
         }
 
         internal void ClearPriors()
         {
+            planeSamples.Clear();
             foreach (var chunk in chunks.Values)
             {
                 System.Array.Clear(chunk.Prior, 0, chunk.Prior.Length);
             }
 
+            priorCells = 0;
+            priorCellsCounted = true;
             IsDirty |= chunks.Count > 0;
         }
 
@@ -200,14 +359,23 @@ namespace Erasmus.ARToolkit
                 var theirs = pair.Value;
                 for (var i = 0; i < SurfaceChunk.CellCount; i++)
                 {
-                    mine.LogOdds[i] = Mathf.Clamp(mine.LogOdds[i] + theirs.LogOdds[i],
-                        SurfaceEvidence.MinLogOdds, SurfaceEvidence.MaxLogOdds);
+                    // Hits on the other level are hits on this surface. Its misses are not: they came from
+                    // rays that crossed the other height, which says nothing about this one.
+                    mine.LogOdds[i] = Mathf.Max(mine.LogOdds[i], theirs.LogOdds[i]);
                     mine.Prior[i] |= theirs.Prior[i];
+                    mine.PriorNext[i] |= theirs.PriorNext[i];
                     mine.Shown[i] |= theirs.Shown[i];
+                    mine.Kept[i] |= theirs.Kept[i];
                 }
             }
 
-            sampleCount += other.sampleCount;
+            planeSamples.AddRange(other.planeSamples);
+            confirmedCells = CountConfirmedCells();
+            priorCellsCounted = false;
+            IsConfirmed |= other.IsConfirmed;
+            HasDepthHeight |= other.HasDepthHeight;
+            SeenCells += other.SeenCells;
+            ThroughCells += other.ThroughCells;
             IsDirty = true;
         }
 
@@ -232,7 +400,7 @@ namespace Erasmus.ARToolkit
                 return false;
             }
 
-            grid.Reset(min.x * SurfaceChunk.Size - 1, min.y * SurfaceChunk.Size - 1, width, depth);
+            grid.Reset(min.x * SurfaceChunk.Size - 1, min.y * SurfaceChunk.Size - 1, width, depth, PriorWeight);
             foreach (var pair in chunks)
             {
                 var chunk = pair.Value;
@@ -242,8 +410,10 @@ namespace Erasmus.ARToolkit
                 {
                     var x = startX + i % SurfaceChunk.Size;
                     var z = startZ + i / SurfaceChunk.Size;
+                    var index = grid.IndexOf(x, z);
                     grid.SetCell(x, z, chunk.LogOdds[i], chunk.Prior[i]);
-                    grid.SetShown(grid.IndexOf(x, z), chunk.Shown[i]);
+                    grid.SetShown(index, chunk.Shown[i]);
+                    grid.SetKept(index, chunk.Kept[i]);
                 }
             }
 
@@ -263,8 +433,11 @@ namespace Erasmus.ARToolkit
                 {
                     var x = startX + i % SurfaceChunk.Size;
                     var z = startZ + i / SurfaceChunk.Size;
-                    var shown = grid.Contains(x, z) && grid.IsShown(grid.IndexOf(x, z));
+                    var inside = grid.Contains(x, z);
+                    var index = inside ? grid.IndexOf(x, z) : 0;
+                    var shown = inside && grid.IsShown(index);
                     chunk.Shown[i] = shown;
+                    chunk.Kept[i] = inside && grid.WasKept(index);
                     if (shown)
                     {
                         shownCells++;
@@ -272,7 +445,7 @@ namespace Erasmus.ARToolkit
                 }
             }
 
-            ShownArea = shownCells * RoomSurfaceMap.CellSize * RoomSurfaceMap.CellSize;
+            ShownArea = shownCells * CellArea;
         }
 
         /// <summary>Nothing of the level is drawn (used when it cannot be drawn at all).</summary>
@@ -284,6 +457,50 @@ namespace Erasmus.ARToolkit
             }
 
             ShownArea = 0f;
+        }
+
+        void CountConfirmed(float before, float after)
+        {
+            var was = before >= SurfaceEvidence.ConfirmedLogOdds;
+            var isNow = after >= SurfaceEvidence.ConfirmedLogOdds;
+            if (was != isNow)
+            {
+                confirmedCells += isNow ? 1 : -1;
+            }
+        }
+
+        int CountConfirmedCells()
+        {
+            var count = 0;
+            foreach (var chunk in chunks.Values)
+            {
+                for (var i = 0; i < SurfaceChunk.CellCount; i++)
+                {
+                    if (chunk.LogOdds[i] >= SurfaceEvidence.ConfirmedLogOdds)
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            return count;
+        }
+
+        int CountPriorCells()
+        {
+            var count = 0;
+            foreach (var chunk in chunks.Values)
+            {
+                for (var i = 0; i < SurfaceChunk.CellCount; i++)
+                {
+                    if (chunk.Prior[i])
+                    {
+                        count++;
+                    }
+                }
+            }
+
+            return count;
         }
 
         bool TryGetChunkBounds(out Vector2Int min, out Vector2Int max)
@@ -327,7 +544,14 @@ namespace Erasmus.ARToolkit
 
         public readonly float[] LogOdds = new float[CellCount];
         public readonly bool[] Prior = new bool[CellCount];
+
+        /// <summary>The planes of the reading that is going on (see <see cref="SurfaceLevel.BeginPriors"/>).</summary>
+        public readonly bool[] PriorNext = new bool[CellCount];
+
         public readonly bool[] Shown = new bool[CellCount];
+
+        /// <summary>Counted as a surface at the last redraw: such a cell is not dropped for one frame of doubt.</summary>
+        public readonly bool[] Kept = new bool[CellCount];
 
         /// <summary>Chunk containing a cell (arithmetic shift rounds negative cells down, as needed).</summary>
         public static Vector2Int ChunkOf(Vector2Int cell) => new Vector2Int(cell.x >> Shift, cell.y >> Shift);

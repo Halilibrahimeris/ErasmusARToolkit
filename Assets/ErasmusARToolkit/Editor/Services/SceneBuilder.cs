@@ -152,6 +152,11 @@ namespace Erasmus.ARToolkit.Editor
             arCamera.nearClipPlane = 0.1f;
             arCamera.farClipPlane = 20f;
 
+            // The toolkit's surface marks and depth corrections are drawn after the camera image and are
+            // depth-tested against the real-world depth it writes.
+            cameraGo.GetComponent<ARCameraManager>().requestedBackgroundRenderingMode =
+                CameraBackgroundRenderingMode.BeforeOpaques;
+
             // Same bindings as AR Foundation's "XR Origin (Mobile AR)" menu item.
             var poseDriver = cameraGo.GetComponent<TrackedPoseDriver>();
             var position = new InputAction("Position", binding: "<XRHMD>/centerEyePosition", expectedControlType: "Vector3");
@@ -164,6 +169,9 @@ namespace Erasmus.ARToolkit.Editor
             var xrOrigin = origin.GetComponent<XROrigin>();
             xrOrigin.CameraFloorOffsetObject = offset;
             xrOrigin.Camera = arCamera;
+
+            // Phone AR has no floor-level tracking origin: an offset would only shift every world height.
+            xrOrigin.CameraYOffset = 0f;
             return origin;
         }
 

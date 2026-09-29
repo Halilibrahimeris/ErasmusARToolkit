@@ -9,7 +9,7 @@ namespace Erasmus.ARToolkit.Tests
         const float Step = 0.025f;
 
         /// <summary>A frame of upward-facing points on a flat area at <paramref name="height"/>.</summary>
-        static ScanFrame PointsOn(Vector3 origin, float height, Rect area, bool upFacing = true)
+        internal static ScanFrame PointsOn(Vector3 origin, float height, Rect area, bool upFacing = true)
         {
             var frame = new ScanFrame();
             frame.Reset(origin, true);
@@ -24,7 +24,7 @@ namespace Erasmus.ARToolkit.Tests
             return frame;
         }
 
-        static List<Vector2> Polygon(Rect rect)
+        internal static List<Vector2> Polygon(Rect rect)
         {
             return new List<Vector2>
             {
@@ -33,9 +33,9 @@ namespace Erasmus.ARToolkit.Tests
             };
         }
 
-        static Vector2Int Cell(float x, float z) => RoomSurfaceMap.CellOf(x, z);
+        internal static Vector2Int Cell(float x, float z) => RoomSurfaceMap.CellOf(x, z);
 
-        static void Integrate(RoomSurfaceMap map, ScanFrame frame, int times)
+        internal static void Integrate(RoomSurfaceMap map, ScanFrame frame, int times)
         {
             for (var i = 0; i < times; i++)
             {
@@ -44,7 +44,7 @@ namespace Erasmus.ARToolkit.Tests
         }
 
         [Test]
-        public void EnsureLevel_HeightsWithinTenCentimeters_ShareOneLevel()
+        public void EnsureLevel_HeightsCloseTogether_ShareOneLevel()
         {
             var map = new RoomSurfaceMap();
 
@@ -55,15 +55,32 @@ namespace Erasmus.ARToolkit.Tests
         }
 
         [Test]
-        public void AddPrior_MarksCellsInsideThePlane_AsSurface()
+        public void AddPrior_WithoutDepth_MarksCellsInsideThePlane_AsSurface()
         {
-            var map = new RoomSurfaceMap();
+            var map = new RoomSurfaceMap { PriorsNeedConfirmation = false };
             map.AddPrior(0f, Polygon(new Rect(0f, 0f, 1f, 1f)));
 
             var level = map.Levels[0];
             Assert.IsTrue(level.HasPrior(Cell(0.5f, 0.5f)));
             Assert.AreEqual(CellState.Occupied, level.GetState(Cell(0.5f, 0.5f)));
             Assert.AreEqual(CellState.Unknown, level.GetState(Cell(1.5f, 0.5f)));
+        }
+
+        [Test]
+        public void AddPrior_WithDepth_NeedsOneFrameOfHits_ToBecomeSurface()
+        {
+            // A table plane of ARCore: a hull that may reach past the table.
+            var map = new RoomSurfaceMap();
+            map.AddPrior(0.75f, Polygon(new Rect(0f, 0f, 1f, 1f)));
+            var level = map.Levels[0];
+
+            Assert.IsTrue(level.HasPrior(Cell(0.5f, 0.5f)));
+            Assert.AreEqual(CellState.Unknown, level.GetState(Cell(0.5f, 0.5f)));
+
+            map.Integrate(PointsOn(new Vector3(0.5f, 1.5f, -0.5f), 0.75f, new Rect(0f, 0f, 0.6f, 1f)));
+
+            Assert.AreEqual(CellState.Occupied, level.GetState(Cell(0.3f, 0.5f)), "Seen by depth.");
+            Assert.AreEqual(CellState.Unknown, level.GetState(Cell(0.8f, 0.5f)), "Only ARCore says so.");
         }
 
         [Test]
@@ -140,7 +157,7 @@ namespace Erasmus.ARToolkit.Tests
         [Test]
         public void Integrate_PriorSeenThroughOnce_StaysUntilSeenThroughAgain()
         {
-            var map = new RoomSurfaceMap();
+            var map = new RoomSurfaceMap { PriorsNeedConfirmation = false };
             map.EnsureLevel(0f);
             map.AddPrior(0.75f, Polygon(new Rect(0f, 0f, 1f, 1f)));
             var table = map.EnsureLevel(0.75f);
@@ -210,7 +227,7 @@ namespace Erasmus.ARToolkit.Tests
         [Test]
         public void Raycast_HitsTheNearestShownSurface_AtItsHeight()
         {
-            var map = new RoomSurfaceMap();
+            var map = new RoomSurfaceMap { PriorsNeedConfirmation = false };
             map.AddPrior(0f, Polygon(new Rect(-2f, -2f, 4f, 4f)));
             map.AddPrior(0.75f, Polygon(new Rect(-0.5f, -0.5f, 1f, 1f)));
             ShowAll(map);
@@ -280,19 +297,10 @@ namespace Erasmus.ARToolkit.Tests
             Assert.IsFalse(level.HasPrior(new Vector2Int(50, 0)));
         }
 
-        /// <summary>Runs the region filter on every level so raycasts see the cells.</summary>
+        /// <summary>Decides what is shown, as the room scan does before it draws, so raycasts see the cells.</summary>
         internal static void ShowAll(RoomSurfaceMap map)
         {
-            var grid = new SurfaceGrid();
-            var filter = new SurfaceRegionFilter();
-            foreach (var level in map.Levels)
-            {
-                if (level.CopyTo(grid))
-                {
-                    filter.Apply(grid);
-                    level.StoreShown(grid);
-                }
-            }
+            new RoomModelBuilder().Rebuild(map, 10f, true, null);
         }
     }
 }

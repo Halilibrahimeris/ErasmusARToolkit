@@ -29,6 +29,11 @@ namespace Erasmus.ARToolkit
         bool realWorldOcclusion = true;
         [SerializeField] ModeOverride modeOverride = ModeOverride.Auto;
 
+        [Header("Room Scan")]
+        [SerializeField, Tooltip("Shows what the room scan measures (depth mapping, floor height, timings) on the " +
+                                 "HUD while scanning. The same line is always written to the log.")]
+        bool showScanDiagnostics;
+
         [Header("Camera")]
         [SerializeField, Tooltip("When real AR is not available (PC, Editor, phones without ARCore), show the " +
                                  "device camera behind the scene: the PC webcam or the phone's back camera.")]
@@ -49,6 +54,7 @@ namespace Erasmus.ARToolkit
         public bool ShowPlanesOnStart => showPlanesOnStart;
         public bool RealWorldOcclusion => realWorldOcclusion;
         public ModeOverride ModeOverride => modeOverride;
+        public bool ShowScanDiagnostics => showScanDiagnostics;
         public bool UseDeviceCamera => useDeviceCamera;
         public string PreferredCameraName => preferredCameraName ?? string.Empty;
         public bool DesktopSimulateImageTargets => desktopSimulateImageTargets;

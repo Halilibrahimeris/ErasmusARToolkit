@@ -125,6 +125,38 @@ namespace Erasmus.ARToolkit.Tests
         }
 
         [Test]
+        public void IsUpFacing_FloorSeenFromAbove_Yes_EitherTangentOrder()
+        {
+            var toCamera = new Vector3(0.3f, 1f, -0.5f);
+
+            Assert.IsTrue(DepthGeometry.IsUpFacing(Vector3.right, Vector3.forward, toCamera, 0.9f));
+            Assert.IsTrue(DepthGeometry.IsUpFacing(Vector3.forward, Vector3.right, toCamera, 0.9f));
+        }
+
+        [Test]
+        public void IsUpFacing_UndersideOfATable_No()
+        {
+            // The camera looks up at the table from below: the surface faces down, toward the camera.
+            var toCamera = new Vector3(0.3f, -1f, -0.5f);
+
+            Assert.IsFalse(DepthGeometry.IsUpFacing(Vector3.right, Vector3.forward, toCamera, 0.9f));
+            Assert.IsFalse(DepthGeometry.IsUpFacing(Vector3.forward, Vector3.right, toCamera, 0.9f));
+            Assert.IsTrue(DepthGeometry.IsHorizontal(Vector3.right, Vector3.forward, 0.9f),
+                "It is horizontal all the same, which is why the scan no longer asks for that.");
+        }
+
+        [Test]
+        public void IsUpFacing_Wall_TiltedSurface_AndNoSurface_No()
+        {
+            var toCamera = new Vector3(0f, 1f, -1f);
+            var tilted = new Vector3(0f, Mathf.Sin(40f * Mathf.Deg2Rad), Mathf.Cos(40f * Mathf.Deg2Rad));
+
+            Assert.IsFalse(DepthGeometry.IsUpFacing(Vector3.right, Vector3.up, toCamera, 0.9f));
+            Assert.IsFalse(DepthGeometry.IsUpFacing(Vector3.right, tilted, toCamera, 0.9f));
+            Assert.IsFalse(DepthGeometry.IsUpFacing(Vector3.right, Vector3.right, toCamera, 0.9f));
+        }
+
+        [Test]
         public void IsHorizontal_FloorYes_WallNo_EitherTangentOrder()
         {
             Assert.IsTrue(DepthGeometry.IsHorizontal(Vector3.right, Vector3.forward, 0.85f));

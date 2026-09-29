@@ -166,7 +166,7 @@ namespace Erasmus.ARToolkit
 
             try
             {
-                scanPanel = new ScanPanel(view.Root, scanner, ShowPlanesForScan);
+                scanPanel = new ScanPanel(view.Root, scanner, ShowPlanesForScan, ShowsScanDiagnostics());
             }
             catch (System.InvalidOperationException exception)
             {
@@ -175,6 +175,13 @@ namespace Erasmus.ARToolkit
             }
 
             scanner.Notification += ShowToast;
+        }
+
+        /// <summary>Asked for in the config, or a development build on a phone.</summary>
+        bool ShowsScanDiagnostics()
+        {
+            return (manager.Config != null && manager.Config.ShowScanDiagnostics)
+                   || (Debug.isDebugBuild && !Application.isEditor);
         }
 
         /// <summary>A scan shows what it finds, so hidden planes are shown again.</summary>

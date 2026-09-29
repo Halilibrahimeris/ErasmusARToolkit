@@ -1,0 +1,476 @@
+
+=================== AREA scan-pipeline ===================
+
+## [high] ARCore plane hulls are shown immediately, with no depth confirmation, and can only be removed where rays happen to cross them
+FILE: C:/Unity/ErasmusARToolkit/Assets/ErasmusARToolkit/Runtime/Scanning/SurfaceEvidence.cs:34
+MECHANISM: PriorWeight 0.5 is greater than OccupiedThreshold 0.3 (L39), so every cell inside an ARCore HorizontalUp polygon is Occupied at log-odds 0 (Classify L46-54), and priors are re-applied every 0.5 s (ArcorePlanePriors.cs:13-29). Such a cell only disappears after 2 miss frames. A miss requires a ray that crosses the level height and ends more than 0.04 + 0.02·d beyond it (RoomSurfaceMap.cs:375-377).
+- Desk-level hulls over chair backrests (top above desk height) or over areas not viewed steeply (|ray.y| < 0.15·d) are never carved.
+- A level that lies below the real floor can never be carved: rays always end on the real floor above it, so originOffset·pointOffset >= 0 (L377).
+-- VERDICT refuted=false
+REASONING: The core claim holds up in the code. The S1 part of it does not.
+
+TRUE:
+(1) An ARCore HorizontalUp hull is drawn as a surface before any depth sample confirms it. Classify(0, prior:true) gives Score 0.5 > 0.3, so the cell is Occupied. SurfaceRegionFilter shows every Occupied cell, and any region of at least 0.06 m² survives. RoomScanner hides the raw ARCore planes and draws the scan in their place, and on the first Rebuild(true) it has only priors.
+(2) The only way to remove such a cell is miss votes: two see-through frames (0.5 → 0.35 → 0.2). Nothing else lowers it. There is no decay, no rule that a hit is required, and no check that the cell was seen but not confirmed.
+(3) The unit tests encode exactly this behaviour: AddPrior_MarksCellsInsideThePlane_AsSurface and Integrate_PriorSeenThroughOnce_StaysUntilSeenThroughAgain.
+
+The path does run on Android. RoomScanner is added by ARToolkitManager.EnsureRoomScanner and is active while the user scans. The spaces are consistent: depth points use camera.cameraToWorldMatrix, priors use plane.transform.localToWorldMatrix, and meshes sit under a root at the world origin. So there is no space bug.
+
+AGGRAVATING (not in the claim):
+- DepthScanSource.TryReadFrame returns false until the depth-mapping self-check passes (L165-169). Until then map.Integrate never runs, so the scan view shows pure, uncarved ARCore hulls while the real ARCore planes are suppressed.
+- If the depth hit test does answer but TryPickMapping never finds a clear winner (a flat floor cannot tell the mirrored candidates apart), mappingUnverifiable is never set (L376 requires zero hits). IsAvailable then stays true (receivedDepth), so the scan never falls back to the sparse source and stays prior-only.
+
+INACCURATE / OVERSTATED:
+- "Priors re-applied every 0.5 s": this only happens when planes changed (priorsDirty). ClearPriors clears only the Prior flags, so a carved cell stays carved. Only new hull growth reappears un-carved.
+- The miss margin quoted is incomplete. For an unconfirmed level it is 0.04 + 0.02·d + HeightWindow (0.15), so carving is even harder than the claim says.
+- The steepness guard almost never blocks carving from a hand-held phone. A camera at about 1.0–1.5 m looking at a point below desk height within MaxRange 4.5 m always has |ray.y|/d of about 0.18 or more, above the 0.15 limit.
+- The backrest case is real, but only for a thin strip of cells in the backrest's footprint or shadow. Rays that end on the backrest above the desk level fail the sign test. Rays that hit the backrest near desk height are not up-facing, so they cast no vote at all. Seat areas under a desk hull are carved normally.
+
+REFUTED (S1):
+- It is true that a level below the real floor cannot be carved (sign test at L377). But such a level does not stay below the floor.
+- RefineHeights feeds every up-facing point, with no x/z restriction, within ±0.15 m of the seed into each level's height histogram. RefreshHeight then moves Height onto the floor peak, and MergeCloseLevels merges levels closer than 4 cm.
+- ARCore planes within 10 cm are placed into the existing floor level by EnsureLevel, and the mesh is drawn at the refined level.Height.
+- Floor points near such a level count as hits, not misses.
+- The test Integrate_DriftedDuplicateFloor_MovesOntoTheRealFloorAndMerges confirms this for a plane 12 cm off.
+- What remains is transient only. A plane 10–15 cm off is re-created as its own level at every prior refresh and can be drawn at its seed height for one rebuild if no depth frame is integrated in between. A plane more than 15 cm off would stay stuck, which is rare. S1 is better explained elsewhere, for example the SurfaceDepth PullHeight of 0.15 m or depth bias.
+
+S3 link is weak: priors are scanline-filled convex areas. They add coverage and do not create holes or ragged edges.
+
+Competing explanation for the S4 screenshot: if the user was not in scan mode, the yellow polygons are the raw ARCore plane LineRenderers from ARPlaneSurfaces. None of this carving logic applies to them.
+CORRECTED: Inside an ARCore HorizontalUp hull, the scan view marks cells Occupied from the prior alone. It does this at StartScan, whenever a plane grows, and for the whole time DepthScanSource is still verifying its image mapping (no frames are integrated then; possibly forever if the check never finds a clear winner). A cell is removed only after two frames in which, for that cell, sampled depth rays that cross the level's height and end beyond it by more than 0.04 + 0.02·d (plus 0.15 m while the level is unconfirmed) outnumber the hits.
+
+Hull parts that are never seen through keep showing. These include cells shadowed by a chair backrest (a thin strip), areas outside 0.3–4.5 m, areas with low-confidence depth (below 100/255), areas seen only while turning faster than 60°/s, and areas hidden behind other objects. Desk-level hulls also get depth-only occluder walls down to the floor (SurfaceMeshBuilder.AddOccluder) and a surface-depth override, so a leftover hull over a chair also hides the floor grid and virtual objects behind it.
+
+This is a real, though limited, contributor to S4. It does not cause S1: a level below the floor is pulled onto the floor by RefineHeights and merged, apart from a one-rebuild transient for planes 10–15 cm off. The steepness guard is not a practical blocker, and the S3 link is weak.
+FIX: Minimal fix:
+1. In SurfaceEvidence make the prior insufficient on its own when depth is available. For example, set PriorWeight to 0.25f (below OccupiedThreshold 0.3f). A prior cell then shows only after one depth hit (0.25 + 0.2 = 0.45 > 0.3), faster than an unprimed cell, and one see-through frame carves it (-0.15 gives Carved). Keep 0.5f for the sparse feature-point source by passing a prior weight into RoomSurfaceMap/SurfaceLevel.Classify, chosen from source.IsPrecise.
+2. In RoomScanner, do not suppress the ARCore planes (or draw nothing) until map.FramesIntegrated > 0. In DepthScanSource, set mappingUnverifiable after N attempts with hits but no winner, so the scan falls back to the sparse source instead of staying prior-only.
+3. Optional, better: replace per-sampled-ray carving with per-cell visibility checks. For each prior or occupied cell center inside the camera frustum, project it into the depth image. If the measured depth is larger than the distance to the cell by more than the margin, count a miss. If it is shorter, the cell is occluded and gives no information. Also count an unconfirmed prior cell that is visible with valid depth but has no up-facing hit for K frames as negative evidence.
+4. Update the tests AddPrior_MarksCellsInsideThePlane_AsSurface, Integrate_PriorSeenThroughOnce_StaysUntilSeenThroughAgain and the RoomScanSimulationTests expectations.
+
+## [high] The floor is never carved by obstacles, and hole filling closes chair and desk footprints
+FILE: C:/Unity/ErasmusARToolkit/Assets/ErasmusARToolkit/Runtime/Scanning/SurfaceRegionFilter.cs:85
+MECHANISM: For the floor level, points on obstacles lie above the floor on the camera's side (same sign, RoomSurfaceMap.cs:377), so they never produce misses. Non-up-facing points (chair legs, desk sides) never produce hits (L366). Floor cells under and around furniture therefore stay Unknown, or Occupied via the ARCore floor prior. FillSmallHoles (L85-105) then fills every enclosed non-Carved hole of up to 0.25 m², which is exactly a chair footprint (about 0.16-0.2 m²), so the floor mesh is drawn continuously through chair bases. There is no obstacle or free-space layer anywhere in the pipeline.
+-- VERDICT refuted=false
+REASONING: I read SurfaceRegionFilter, RoomSurfaceMap, SurfaceLevel, SurfaceEvidence, SurfaceGrid, ScanFrame, DepthScanSource, RoomScanner, RoomSurfaceView, SurfaceMeshBuilder, SurfaceDepthMaterials, ArcorePlanePriors, RenderOrder, the three shaders, RealWorldOcclusion, ARToolkitManager.EnsureRoomScanner and the related tests. This code runs on Android. ARToolkitManager.Awake always adds and initializes RoomScanner (ARToolkitManager.cs:126, 199-215). With ARCore Depth, DepthScanSource sets HasNormals=true (DepthScanSource.cs:233), so the "canHit only if up-facing" branch applies. Nothing else in the pipeline guards against or changes the behaviour below.
+
+What the code proves (so the claim is not refuted):
+1. The floor level cannot be carved by obstacles. A miss needs the ray to end on the other side of the level from the camera (RoomSurfaceMap.cs:376-377). For the floor the camera is always above it, so any obstacle point (chair seat, leg, desk side, bag, wall) has pointOffset>0, the same sign as originOffset, and returns early with no vote. The only way to carve a floor cell is a depth point more than 4 cm + 2 cm/m below the floor (+15 cm while unconfirmed, L375), which is just noise. In practice floor cells never reach CellState.Carved (logOdds<0, SurfaceEvidence.cs:53).
+2. Non-up-facing points never add hits (L350, L366-369). Obstacle surfaces therefore add no evidence of any kind to the floor cells under them.
+3. ARCore floor priors give Score 0.5 > OccupiedThreshold 0.3 (SurfaceEvidence.cs:34,39,48). No misses ever arrive at the floor, so prior cells under and around furniture stay Occupied for good.
+4. FillSmallHoles (SurfaceRegionFilter.cs:85-105) shows every enclosed, not-shown, non-Carved region up to MaxHoleArea=0.25 m² (100 cells, L21, L93). Floor cells are never Carved, so the non-Carved guard never applies on the floor. A chair-sized unseen hole (0.4x0.4 m = 0.16 m²) is filled, and this matches the stated design intent (L10-11, "under a monitor stand, a bag").
+5. There is no obstacle, footprint, free-space or mesh layer anywhere. Grepping for obstacle, free space, ARMeshManager and semantic finds nothing, and CellState has only Unknown, Occupied and Carved.
+
+Where the claim is wrong or overstated:
+(a) Desk footprints are not closed by FillSmallHoles. The project's own simulated desk is 1.6x0.7 = 1.12 m², far above 0.25 m². Floor under a desk is shown because of the uncarvable ARCore prior and hits from oblique views, not because of hole filling.
+(b) "No obstacle layer anywhere" is too strong. Raised levels at least 15 cm above the floor (desk tops, and chair seats, which a test says are discovered: RoomScanSimulationTests.cs:113-122) get a depth-only occluder volume down to the floor (RoomScanner.cs:318; SurfaceMeshBuilder.cs:152-155, 346-357; queue 1988, drawn before the grids at 1990). That volume does hide the floor grid behind or under detected desks and chair seats. It is only an occlusion proxy, though: it does not remove floor cells, it does not affect placement (RoomSurfaceMap.Raycast L199-227 only checks level.IsShown), and legs, chair backs, bags, people and walls get nothing.
+(c) The link to S4 (grid drawn over chair legs) is mostly wrong. In screen space the grid pixels on top of a chair leg come from visible floor behind the leg, and those cells are shown with or without hole filling. The direct cause is the depth-test design:
+- ARToolkitSurface.shader:99-101 pulls each grid fragment toward the camera by bias = clamp(0.12/h, 0.05, 0.3). The grid is effectively depth-tested at the point 12 cm above the floor on its view ray.
+- The SurfaceDepth Mark/Write passes (SurfaceDepthMaterials.cs:15, 75-87; ARToolkitSurfaceDepth.shader:86-90) replace the measured real depth with the floor's own depth wherever the real surface is less than PullHeight 0.15 m above the floor.
+- Result: the bottom 12-15 cm of every real object (leg feet, bags, shoes) can never hide the floor grid.
+- Higher up, 2-3 cm legs fall between the 40-column samples and are smoothed away by ARCore "Fastest" depth with temporal smoothing (RealWorldOcclusion.cs:36-37), so they do not hide it either.
+The claim is correct about S5 (no obstacle recognition), and hole filling only adds to S4 for cells directly under a seat.
+CORRECTED: The floor SurfaceLevel is structurally uncarvable. RoomSurfaceMap.VoteForLevel (L376-377) only votes a miss when the depth point lies on the opposite side of the level from the camera. Every obstacle point lies above the floor, the camera's side, so it produces no floor vote at all. Non-up-facing points produce no hits either (L350/L366). Floor cells under or beside furniture are therefore Unknown, or Occupied permanently through the ARCore floor-plane prior (0.5 > 0.3, and the prior can never be overturned because floor misses need below-floor depth noise). FillSmallHoles then fills enclosed unseen holes up to 0.25 m², which covers chair-seat-sized holes but not desk footprints (larger than 0.25 m²; those stay floor through the prior and oblique hits).
+
+The only obstacle representation is the depth-only occluder box extruded from raised levels at least 15 cm above the floor (desk tops, chair seats if detected). It hides the grid visually but does not remove floor cells and does not affect placement raycasts. There is no footprint, free-space or height-column layer, and no support for legs, backs, bags, people or walls.
+
+The visible "grid over chair legs" (S4) is mainly caused by the depth-test design, not by hole filling. The AR Surface shader tests the grid at the point about 12 cm above the floor on the view ray (_HeightTolerance 0.12). The SurfaceDepth Mark/Write passes overwrite the real depth with the floor's depth wherever the real surface is less than 15 cm above the floor. So the lower 12-15 cm of every real object can never occlude the floor grid, and thin legs above that are lost at the depth sampling and ARCore Fastest-depth resolution.
+FIX: 1) Add obstacle evidence to the floor (a 2.5D elevation or obstacle layer):
+- In RoomSurfaceMap.CollectVotes, for each point with floor+0.05 m < point.y < origin.y and not up-facing (or up-facing but not on any level), add an obstacle vote for the floor cell CellOf(point.x, point.z). Keep per-cell obstacleLogOdds and maxObstacleHeight in SurfaceChunk.
+- Clear that evidence (free-space carving) when a ray passes through the column below its recorded height and ends on the floor beyond it.
+- Add CellState.Blocked, and check it in Classify before the prior so an ARCore prior cannot override it.
+2) In SurfaceRegionFilter.Apply, start from `Occupied && !Blocked`. In FillSmallHoles, skip Blocked cells the same way as Carved (`if (state != CellState.Carved && state != CellState.Blocked)`). Optionally dilate Blocked cells by one cell.
+3) Build obstacle occluder boxes from clusters of Blocked cells (floor up to maxObstacleHeight) with the existing Occluder material (queue 1988). This also gives legs, bags and chair backs occlusion.
+4) For S4 specifically, lower `_HeightTolerance` (0.12) and `SurfaceDepthMaterials.PullHeight` (0.15) to about 0.04-0.06, or skip the SurfaceDepth Mark/Write on floor cells near Blocked cells. That way real depth from legs and small objects is kept and they occlude the grid.
+5) Make RoomSurfaceMap.Raycast reject Blocked cells and occluder volumes.
+Note: ARMeshManager meshing is not available on ARCore, so a phone-side obstacle map has to be built from the ARCore depth image, e.g. a coarse occupancy or TSDF voxel grid about 5-10 cm like the Quest scene model, projected to 2.5D.
+
+## [high] The depth correction deletes real-world depth within 15 cm above every scanned surface, and under phantom raised surfaces
+FILE: C:/Unity/ErasmusARToolkit/Assets/ErasmusARToolkit/Runtime/Scanning/SurfaceDepthMaterials.cs:15
+MECHANISM: Mark pass: the fill is pulled toward the camera by 0.15 m / cameraHeight (12.5% of distance at a 1.2 m camera height, i.e. 37 cm along a 3 m ray). It sets stencil wherever the measured depth is not nearer than that. Write pass: on those pixels the surface's own depth replaces the measured depth (ARToolkitSurfaceDepth.shader L80-92).
+- The lowest 15 cm of chair and desk legs, bags and feet lose their real depth, so the floor grid (which also ignores anything below 12 cm, _HeightTolerance in ARToolkitSurface.shader L99-101) is drawn over them.
+- A raised level whose shown area is phantom (uncarved prior, or discovered from edge pixels) overwrites the depth of everything behind or below it with the phantom plane's depth. Real chairs and floor under it, and virtual objects on the floor seen through that region, then lose to the fake surface.
+-- VERDICT refuted=true
+REASONING: The shader math in the claim is correct. What fails is the claim that this code causes the symptoms on the phone. The depth correction cannot run in an Android build of this project as it stands.
+
+1) Why the path is dead in a player build. RoomSurfaceView only creates the Depth Mark / Depth Write parts when SurfaceDepthMaterials.Acquire() returns a slot. Acquire() returns -1 when the source material is null. The source comes from ToolkitTheme.SurfaceDepthMaterial, and the shipped ARToolkitTheme.asset has no surfaceDepthMaterial entry. Assets/ErasmusARToolkit/Materials/ARToolkitSurfaceDepth.mat does not exist. So RoomScanner falls back to Shader.Find("Erasmus AR Toolkit/Surface Depth"). The shader's GUID (33b60bb0a13ec8c4c901e4e6256504fd) is referenced nowhere in Assets or ProjectSettings. It is not in Always Included Shaders, and there is no Resources folder or shader variant collection that would pull it in. So the shader is not in the build, and Shader.Find returns null in the player. The code's own comment at RoomScanner.cs:451-454 says this ("works in the Editor; a build needs the theme materials"). CreateFallbackMaterial logs a warning and returns null. The result is no mark/write renderers, and the measured ARCore depth is left untouched.
+
+This is the current state, not a leftover. The theme holds the occluder material but not the surface-depth one, which means Run Setup (EnsureRoomScanMaterials sets both together) has not run since the SurfaceDepth code arrived. Nothing calls GetOrCreateTheme at build time: it is only called from ToolkitSetup and SceneBuilder, and the only build preprocessor is ReferenceLibraryPreBuild. The editor test ToolkitMaterials_UseTheirRenderOrder("ARToolkitSurfaceDepth") would fail right now with "missing; run Run Setup". So the correction runs only in Editor play mode or AR simulation, never on the phone.
+
+2) The math, if it did run, is as claimed. pull = min(0.15/|camY - surfY|, 0.35) is 0.125 at 1.2 m, which is 37.5 cm along a 3 m ray. The Mark pass (LessEqual, stencil Replace) marks every pixel whose measured depth is at or beyond the point 15 cm above the surface. The Write pass (ZTest Always, ZWrite On, stencil Equal) stamps the surface depth × 1.004 onto those pixels. A phantom raised level would therefore replace the farther real floor/chair depth with its nearer plane depth. So this is a real latent problem that switches on as soon as Run Setup creates the material.
+
+3) What actually causes S4 and S2 on the phone:
+(a) Grid over the bottom of chair legs: the grid shader's own pull (ARToolkitSurface.shader:99-101, _HeightTolerance 0.12 m, bias 0.1 at 1.2 m). The grid wins wherever the real hit is less than about 12 cm above the floor. On top of that, ARCore's smoothed or missing depth on thin legs pushes leg pixels to floor depth, so the grid can cover more than 12 cm of the leg.
+(b) Phantom raised surfaces hiding the floor grid and virtual objects: this happens through the table occluder, which does ship. ARToolkitOccluder.mat is in the theme, its shader is referenced, and useOccluders defaults to true. SurfaceMeshBuilder.AddOccluder copies the fill (the shown area, which can include uncarved ARCore-prior cells and filled holes) and adds walls down to the floor. It is drawn with ZWrite On / ZTest LEqual at queue 1988, so a phantom desk or chair-seat region wins over the real floor behind it. It then hides the floor grid and any virtual box behind or under it in screen space.
+(c) The jagged bottom of the box on the floor is plain ARCore depth noise at the box/floor contact. The SurfaceDepth pass (PushBack 0.004) was written to fix exactly this, but it is not deployed, which is why the symptom shows up.
+CORRECTED: On the phone, SurfaceDepthMaterials never runs. The theme has no surface-depth material, and the runtime Shader.Find fallback returns null because the shader is not in the build. The measured ARCore depth is used as is.
+
+- S4, grid over the bottom of chair legs: caused by ARToolkitSurface.shader's own 12 cm height-tolerance pull (L99-101), plus ARCore depth being smoothed or missing on thin legs.
+- S4/S2, phantom desk or chair-seat regions hiding the floor grid and virtual objects behind or under them: caused by the table occluder (SurfaceMeshBuilder.AddOccluder with ARToolkitOccluder.shader, ZWrite On / LEqual, queue 1988), built from the same shown area that can include uncarved ARCore-prior cells and filled holes.
+- S2, jagged bottom of the box on the floor: raw ARCore depth noise at the box/floor contact. The SurfaceDepth pass (PushBack 0.004) was meant to fix it but is not deployed.
+
+The claimed SurfaceDepth mechanism is geometrically right, but only as a latent issue. It becomes active once Tools > Erasmus AR Toolkit > Run Setup creates ARToolkitSurfaceDepth.mat and assigns it to the theme.
+FIX: 1) Deploy the correction: run Tools > Erasmus AR Toolkit > Run Setup so ARToolkitSurfaceDepth.mat is created and assigned to ARToolkitTheme.asset. Alternatively, add the shader to Always Included Shaders, or have a build preprocessor call ToolkitAssets.GetOrCreateTheme(). Add a runtime log or assert when theme.SurfaceDepthMaterial is null in a player build.
+
+2) Before or while deploying it, limit the latent over-reach:
+(a) Only give a depth slot, and only build occluders, from confirmed evidence. In SurfaceMeshBuilder/RoomScanner, build a separate "evidence" mesh from cells with logOdds above a threshold, ignoring prior-only and hole-filled cells. Use that mesh for the Depth Mark/Write and Occluder parts instead of fill.Mesh (RoomSurfaceView.cs:137-138, SurfaceMeshBuilder.AddOccluder).
+(b) For raised levels, make the Mark pass two-sided: also require the measured depth to be no more than about PullHeight beyond the surface. For example, add a second Mark pass that uses a push-away version of the surface with ZTest GreaterEqual and clears the stencil. Then pixels whose real depth is far behind the plane (floor seen through a phantom desk) keep their real depth.
+(c) Lower PullHeight to about 0.05-0.08 m, or scale it with distance to match ARCore's noise, so legs, feet and bags keep more of their real depth.
+
+## [high] The grid texture is world-axis aligned at a fixed 25 cm pitch, and the outlines are blobby
+FILE: C:/Unity/ErasmusARToolkit/Assets/ErasmusARToolkit/Runtime/Scanning/SurfaceMeshBuilder.cs:168
+MECHANISM: The fill UV is positionWS.xz × 4 (ARToolkitSurface.shader L104; ARToolkitPlane.mat tiling 4), aligned to the session's initial heading, never to the real tile lines or the room's axes. Edges come from marching squares over a 1-2-1-blurred log-odds field (L168-216), with no contour simplification or orthogonalization. The result is organic blob outlines, never the straight, room-aligned polygons a VR headset shows. Any height error also makes the grid swim with parallax.
+-- VERDICT refuted=false
+REASONING: Every factual part of the claim checks out in the code, and this is the path that runs on the phone. The claim's causal story needs two corrections, though.
+
+1) The grid fill is world-axis aligned with a fixed 25 cm pitch, and it really runs on device. RoomScanner takes its fill and outline materials straight from the ARPlaneManager plane prefab. Both scenes use ARToolkitPlane.prefab, whose fill material is ARToolkitPlane.mat. That material uses the "Erasmus AR Toolkit/AR Surface" shader (guid a54795e8...) with _BaseMap tiling 4. The texture is made by GridTextureFactory with one line along one edge of each tile, so you get one grid line every 1/4 m. The UVs are world XZ times the tiling. The scan meshes are built in world space: cell centres are (OriginX+x+0.5)*0.05, and the mesh root sits at the world origin with no rotation. In AR Foundation/ARCore, world X/Z comes from the phone's heading when the session started. Only Y is tied to gravity. Nothing in Runtime/Scanning estimates the room's direction or rotates the UVs (a grep for yaw/align/dominant/orthogon/simplif/douglas finds nothing relevant). The grid therefore lies at an arbitrary angle and spacing compared with the classroom tiles. The shader's own header says this is on purpose: overlapping planes share one grid. Nothing prevents it. The ARCore plane visuals (outside a scan) use the same material, so they have the same behaviour.
+
+2) The edges come from marching squares over a 1-2-1 blurred evidence field, with no simplification or straightening. This is confirmed in SurfaceMeshBuilder L88-156 and L168-216. Each marching-squares segment becomes one 1 cm outline quad (L323-343), and the occluder walls use the same segments. There is no Douglas-Peucker pass, no snapping to room axes, and no memory of the previous outline between rebuilds (one every 0.5 s).
+
+Correction A: the shader does not make the perspective itself wrong. The depth-test pull (shader L97-102) scales the vertex toward the camera along its view ray, so the grid lands on screen exactly where a horizontal plane at level.Height would be. The mismatch with the tiles is (a) rotation, because the session heading is arbitrary, (b) spacing, 25 cm against the real tile size, and (c) parallax from any error in level.Height. This claim explains the "does not match the tiles" part of S1, not the "sinks below the floor" part. That part is a height or depth problem somewhere else.
+
+Correction B: the mesh builder does not create the holes and islands in S3. Those come from the evidence and from SurfaceRegionFilter (MinRegionArea 0.06 m², MaxHoleArea 0.25 m²). The builder does make the edges more ragged, and the mechanism is more specific than "blurred log-odds". FieldValue passes the raw score minus the threshold, clamped only to ±0.05. That value ranges from about -1.5 for a carved cell (log-odds -1.2) to about +1.8 for a confirmed cell with an ARCore plane prior. The blur mixes these uneven magnitudes, so the zero crossing depends on how strong the evidence is, not only on whether a cell is shown. Worked example: a weakly shown edge cell (+0.05) between a confirmed cell (+1.3) and a carved cell (-1.5) blurs to (1.3+0.1-1.5)/4 = -0.025, so it disappears from the fill. A hidden unknown cell (-0.3) between two confirmed cells (+1.3) blurs to (1.3-0.6+1.3)/4 = +0.5, so it gets filled in. As the log-odds change from frame to frame, the outline shifts by up to about one cell (5 cm) at each rebuild. Thin one-cell strips vanish and edges look wavy. The fill edge also lies between cell centres, so it does not match exactly the shown-cell set that the raycast uses.
+CORRECTED: The fill UVs are world XZ × 4 on a texture with one line per tile, so the grid is 25 cm and aligned to the ARCore session axes, which follow the phone's heading at session start. The real tiles have their own angle and size (often 30 or 60 cm), so the grid lines look rotated and wrongly spaced against them. On screen the grid is geometrically correct for a horizontal plane at level.Height, because the shader's depth pull keeps pixels on their view rays. Any error in level.Height adds parallax "swimming". This explains the tile-mismatch part of S1 only, not the grid sinking below the floor.
+
+For S3, holes and islands come from the evidence and SurfaceRegionFilter, not from SurfaceMeshBuilder. The builder makes edges worse: it blurs the unnormalised score field (about -1.5 to +1.8) instead of a shown/hidden mask. The traced edge therefore follows noisy evidence strength. Edge cells next to carved cells are dropped, notches between strong cells are filled, thin strips vanish, and the outline moves by up to about 5 cm at each 0.5 s rebuild. There is no contour simplification, straightening, or smoothing between rebuilds, so the outlines stay organic blobs instead of straight polygons aligned with the room.
+FIX: 1) Align the grid (shader plus a small C# helper). Add `_GridYaw` (radians), `_GridOrigin` (xz) and a tiling set in meters to ARToolkitSurface.shader. In Vert: `float2 p = positionWS.xz - _GridOrigin; float s, c; sincos(-_GridYaw, s, c); p = float2(c*p.x - s*p.y, s*p.x + c*p.y); output.uv = p * _BaseMap_ST.xy + _BaseMap_ST.zw;`. Estimate the room yaw in RoomScanner. One way is a histogram, taken modulo 90°, of the long outline segment directions weighted by length (floor and desk edges, and vertical ARCore planes if you turn on PlaneDetectionMode.Vertical). Another is ARPlane.pose rotation plus extents of the largest floor plane. Optionally, detect the grout lines with a Hough transform on the CPU camera image projected onto the floor to get both yaw and tile pitch. Set it on the material with Material.SetFloat/SetVector, and damp it so it changes slowly. Also expose the tile pitch (or use a quieter 1 m grid or dot pattern) so a mismatch is less visible.
+
+2) Cleaner outlines (SurfaceMeshBuilder.PrepareField/Build). Build the field from the shown mask only, e.g. `field[i] = grid.IsShown(i) ? 1f : -1f;` (or clamp the score to ±1), before the blur, so evidence strength no longer moves the edge. After marching squares, chain the segments into closed loops. Simplify them with Douglas-Peucker (tolerance about 3-4 cm). Then snap edges within about 12° of the room yaw or yaw+90° onto those axes and intersect neighbouring edges to get clean corners. Triangulate the fill from the simplified loops (ear clipping, or Unity's Poly2Tri-style triangulation) and build the outline ribbon and occluder walls from the same loops.
+
+3) Stop edge wobble between rebuilds. Add hysteresis to the shown state (for example, a cell turns on at score > 0.3 but only turns off below 0.15), or only redraw an edge vertex when it moves more than one cell.
+
+=================== AREA render-placement ===================
+
+## [high] Surface Depth shader and material are not in the build, so floor-depth correction is off on the phone
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Scanning\..\Runtime\Scanning\RoomScanner.cs:465
+MECHANISM: ToolkitTheme has a surfaceDepthMaterial field (ToolkitTheme.cs:25), but Assets/ErasmusARToolkit/Settings/ARToolkitTheme.asset serializes only occluderMaterial (line 19) and no surfaceDepthMaterial. There is no Assets/ErasmusARToolkit/Materials/ARToolkitSurfaceDepth.mat. The shader GUID 33b60bb0a13ec8c4c901e4e6256504fd is referenced by no asset, it is not in GraphicsSettings Always Included Shaders (ProjectSettings/GraphicsSettings.asset:29-36), and it is not under Resources. So Unity leaves 'Erasmus AR Toolkit/Surface Depth' out of the Android player. At runtime ARToolkitManager passes theme.SurfaceDepthMaterial = null (ARToolkitManager.cs:212-213). RoomScanner.GetSurfaceDepthMaterial then calls CreateFallbackMaterial, which uses Shader.Find (RoomScanner.cs:465-486); that returns null in the player and logs 'Shader ... is missing'. SurfaceDepthMaterials(null).Acquire() returns -1 (SurfaceDepthMaterials.cs:44-49), so no LevelView gets Depth Mark/Write parts (RoomSurfaceView.cs:133-139). Every floor pixel then keeps ARCore's raw, noisy, low-res depth. As the shader's own header comment notes, that depth is measured too close in patches on shiny tiles (ARToolkitSurfaceDepth.shader:1-4). It hides the bottom of objects standing on the floor and parts of the grid. The editor test RealWorldOcclusionTests.cs:106 (ARToolkitSurfaceDepth expected) would fail in the current state, which shows Run Setup (ToolkitAssets.cs:92-107) has not been re-run since the feature was added. Check logcat for the warning.
+-- VERDICT refuted=false
+REASONING: I tried to refute the claim and could not. The main mechanism holds for the current project state.
+
+1. The theme asset that both build scenes use has no surfaceDepthMaterial, and no ARToolkitSurfaceDepth.mat exists. Git shows the shader and the theme asset were added in the same commit (6a30bc6 "SAVE"), so the theme was never re-saved with the new field. Unity therefore deserializes it as null.
+
+2. Nothing in Assets, ProjectSettings or Packages references the shader GUID 33b60bb0a13ec8c4c901e4e6256504fd except its own .meta file. It is not in Always Included Shaders, there are no preloaded shaders, no .shadervariants file, and it is not under any Resources folder. So it is not included in the Android player. Shader.Find only returns shaders that are in the build, so the fallback returns null and logs the warning.
+
+3. Nothing runs Setup automatically before a build:
+   - BuildRunner.Build and GetBlockingProblem do not call ToolkitSetup or GetOrCreateTheme.
+   - The only IPreprocessBuildWithReport is ReferenceLibraryPreBuild.
+   - GetOrCreateTheme is only reached from Run Setup (menu, Setup tab, batch) and SceneBuilder.
+
+4. The code path does run on the phone. RoomScanner is added at runtime (AddComponent), so steadySurfaceDepth keeps its default of true. GetView() runs on the first Rebuild of StartScan. With a null material, SurfaceDepthMaterials.Acquire() returns -1, so no LevelView gets Depth Mark or Depth Write parts.
+
+5. Real-world occlusion is on by default. config.RealWorldOcclusion defaults to true and is not serialized in ARToolkitConfig.asset. The manager uses EnvironmentDepthMode.Fastest, so on depth-capable phones the raw ARCore depth written by the camera background is never corrected on scanned surfaces.
+
+Corrections to the claimed symptoms:
+- S2 is the real consequence. Placed virtual objects (normal opaque materials, queue 2000, no depth pull) are depth-tested against raw ARCore depth. On shiny tiles that depth is measured too close in patches, which tears the box bottom in a jagged way. This is exactly what the SurfaceDepth pass was written to prevent.
+- S3 is only weakly explained. The floor grid, outline and rings use "Erasmus AR Toolkit/AR Surface", which has its own depth-test pull (_HeightTolerance 0.12 m, _DepthBias 0.05, _MaxDepthBias 0.3; ARToolkitSurface.shader:13-21, 28-30). So the grid is mostly protected from noise even without SurfaceDepth. The ragged edges, holes and islands in the coverage come from the scan mesh (SurfaceGrid, filter, builder), not from this defect.
+- S1 is not caused by this. Missing depth correction can only hide pixels in the near direction. It cannot shift the grid's height or make it sit below the floor. At most, patches hidden by too-close noise could look like "sinking".
+- Even with the material present, the correction only covers pixels up to 0.15 m above a scanned surface (PullHeight) and at most 8 levels. A box whose base is really placed below the scanned or real floor would still be cut.
+
+Final verdict: the defect is real. The Surface Depth correction is off in the Android build, which directly contributes to S2. The claimed contributions to S3 and S1 are overstated.
+CORRECTED: Unity stored ARToolkitTheme.asset before ToolkitTheme gained surfaceDepthMaterial, and Run Setup (ToolkitAssets.EnsureRoomScanMaterials) has not been run since. As a result:
+- There is no ARToolkitSurfaceDepth.mat, and the theme field deserializes as null.
+- Because nothing references the "Erasmus AR Toolkit/Surface Depth" shader, it is stripped from the Android player.
+- RoomScanner falls back to Shader.Find, which returns null in the player and logs the "missing" warning.
+- SurfaceDepthMaterials has no source, so Acquire() returns -1 and no scanned level gets its Mark/Write depth-replacement passes.
+
+On ARCore-Depth phones (occlusion is on by default), the camera background's raw, noisy Fastest-mode depth stays in the depth buffer on scanned surfaces. Opaque virtual objects standing on the floor have no depth pull of their own. They get their bottoms cut in jagged patches wherever the depth is measured too close (shiny tiles). That is S2.
+
+The floor grid and rings are mostly shielded by the AR Surface shader's own depth pull (0.12 m height tolerance), so the effect on S3 is small. S3's ragged coverage and S1's height error come from other causes (scan mesh, floor height estimation), not from this defect.
+FIX: Immediate fix (asset only):
+- In the Editor, run Tools > Erasmus AR Toolkit > Run Setup (or call ToolkitAssets.GetOrCreateTheme()).
+- This creates Assets/ErasmusARToolkit/Materials/ARToolkitSurfaceDepth.mat (queue 1960) and assigns it to ARToolkitTheme.asset. Commit both files, then rebuild.
+- Verify: ARToolkitTheme.asset has a `surfaceDepthMaterial: {fileID: 2100000, guid: <new mat guid>}` line, RealWorldOcclusionTests case "ARToolkitSurfaceDepth" passes, and logcat no longer shows "Shader 'Erasmus AR Toolkit/Surface Depth' is missing".
+
+Robust fix (so this cannot silently happen again):
+1. Add an IPreprocessBuildWithReport (callbackOrder 0) in the Editor assembly that calls ToolkitAssets.GetOrCreateTheme(). Throw BuildFailedException if theme.OccluderMaterial or theme.SurfaceDepthMaterial is still null.
+   - Or add that check to BuildRunner.GetBlockingProblem, e.g. `if (theme.SurfaceDepthMaterial == null) return "Room scan materials missing: run Setup.";`
+2. Optionally give RoomScanner, or better ToolkitTheme, a serialized `Shader surfaceDepthShader` / `Shader occluderShader` reference. The shader is then always included and CreateFallbackMaterial can use `new Material(serializedShader)` instead of Shader.Find.
+3. Optionally, in ARToolkitManager.Awake, log an error once in development builds when theme.SurfaceDepthMaterial == null, so a bad build is visible immediately.
+
+## [high] The grid/outline depth pull (5–30% of distance) turns off occlusion by real objects near a surface, and by the exact room occluders
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Shaders\ARToolkitSurface.shader:99
+MECHANISM: Vert computes bias = clamp(_HeightTolerance / |cam.y - p.y|, _DepthBias, _MaxDepthBias) = clamp(0.12/H, 0.05, 0.30) (lines 28-30, 99-101) and depth-tests the fragment at cam + (p - cam)·(1 - bias). For the floor with the phone 1.2 m up, the test point is 10% nearer: a floor point at 3 m is tested at 2.7 m, so anything less than 12 cm above the floor along the ray (chair feet, the lower part of legs, desk rails) cannot hide the grid. For a desk top (0.75 m) with the phone at 0.9–1.2 m, H is 0.15–0.45, so bias is 0.27–0.30 (the cap). The desk plane and its yellow outline (same shader, ARToolkitPlaneEdge.mat) are then tested up to 30% nearer, e.g. 60 cm nearer at 2 m, so chairs and people in front do not occlude them. The same pull applies against the depth-only room occluders (queue 1988, exact geometry, ARToolkitOccluder.shader:22-25). Floor-grid pixels up to 10% of the distance behind a table or chair-seat occluder wall still pass, so the floor grid bleeds onto the sides and legs of desks and chairs. On scanned surfaces the pull is not needed, because the Write pass already replaced the noisy surface depth.
+-- VERDICT refuted=false
+REASONING: I could not refute the claim. The shader does what the claim says, the path runs on Android with ARCore depth, and nothing elsewhere guards against it. Two parts of the claim need correcting, though: how much of S4 it explains, and its side remark about scanned surfaces.
+
+Why the path runs:
+- ARToolkitConfig.realWorldOcclusion is true by default. RealWorldOcclusion.Configure turns on the AROcclusionManager (PreferEnvironmentOcclusion).
+- ARCore's camera background defaults to BeforeOpaques. It uses ZWrite On and writes the depth of the real world (ARCoreBackground.shader) before queue 1960.
+- The plane prefab uses ARToolkitPlane.mat (queue 1990) and ARToolkitPlaneEdge.mat (queue 1991). Both use the AR Surface shader. Neither material stores _HeightTolerance or _MaxDepthBias, and no script sets them, so the shader defaults 0.12 and 0.3 apply.
+- Scanned surfaces reuse the same prefab materials (RoomScanner.ReadPlaneMaterials), so they get the same pull.
+- The spaces are correct. Camera and vertex are both in world space, and scaling about the camera keeps each pixel in place while changing only its depth.
+
+The numbers check out:
+- Phone at 1.2 m over the floor: bias = 0.10. The ray drops 1.2 m over its full length, so at 90% of the distance it is 12 cm above the floor. Any real point, or occluder wall, that the ray hits less than 12 cm above the floor cannot hide the floor grid.
+- Desk at H = 0.15–0.45 m below the phone: bias = 0.27–0.30. People or chair backs within 30% of the distance in front of the desk point do not hide the desk grid or its outline. Example: a person 0.5 m in front of a desk point 2.5 m away is at 2.0 m, which is more than 1.75 m, so the grid draws over them.
+- The occluder is depth-only at queue 1988, drawn before the grids, so the same pull applies to it. The floor grid shows on a band about 12 cm high at the bottom of each table or chair-seat occluder wall.
+
+Corrections to the claim:
+1. The pull is on purpose (shader lines 13-21). Measured in world height it is a band of at most 12 cm above the surface, so for the floor it only explains the bottom ~12 cm of chair legs. Grid over the whole leg comes mostly from ARCore depth itself: Fastest mode with temporal smoothing is low resolution and misses thin legs completely.
+2. When a desk plane's hull reaches past the desk edge above chairs, a chair seat under it is behind the plane point on the ray. No depth test could hide the plane there, with or without the pull. So that part of "outlines bleed over chairs" is plane geometry. The pull only explains objects in front of the surface point.
+3. Table grids lie exactly on their own occluder's top: AddOccluder reuses the fill vertices (SurfaceMeshBuilder.cs:348-349). Some depth offset is needed, or the table grid z-fights with its occluder. Removing the pull entirely is wrong; it has to shrink to a small constant.
+4. The claim says scanned surfaces don't need the pull because the Write pass already replaced the depth. Two problems:
+   - (a) Even when the depth correction runs, its Mark pass (PullHeight 0.15, MaxPull 0.35) is larger than or equal to the grid pull at every height H under 3 m. So the Mark pass, not the grid pull, decides what hides the grid on scanned surfaces. Taking the grid pull away there would change nothing; the Mark pass has the same flaw, and a bigger one.
+   - (b) In the current project the correction is probably not active in a phone build. There is no ARToolkitSurfaceDepth.mat, and ARToolkitTheme.asset has no surfaceDepthMaterial entry. RoomScanner then falls back to Shader.Find("Erasmus AR Toolkit/Surface Depth"). The shader is not in Resources, not in Always Included, and not used by any material, so in a player build Shader.Find most likely returns null. SurfaceDepthMaterials.Acquire then returns -1 and no correction is drawn. In that case the grid pull is the only protection against noisy depth, and removing it would bring back grids cut up by noise (S3-like).
+CORRECTED: The AR Surface shader tests every fill and outline pixel against depth at a point pulled toward the camera, and the pull scales with how flat the view is:
+- Floor seen from 1.2 m: about 10%.
+- Desk seen from 0.15–0.45 m above it: 27–30% (the cap).
+
+Real depth (or occluder depth) closer than the tested point cannot hide the mark. In world terms, a real object hides the mark only if the ray hits it more than about 12 cm (less at the cap) above the surface's height. The effects:
+- Floor grid: drawn over the bottom ~12 cm of chair and desk legs, and over the bottom ~12 cm band of room-occluder walls.
+- Desk grid and outline: drawn over people and chair backs standing within about 30% of the distance in front of the desk point. This is the main part of S4 the pull really causes.
+
+What the pull does not cause:
+- Plane hulls that reach past the desk edge above chairs. That is plane geometry.
+- The grid over full-height thin chair legs. That comes from ARCore Fastest depth missing thin legs.
+
+On scanned surfaces, if the depth correction were active, its Mark pass (15 cm / up to 35%) is always at least as large and would decide occlusion by itself. In the current project, though, the correction's material is missing from the theme, so a phone build probably runs with no correction and the grid pull is the only protection against noise.
+FIX: 1. Make the pull small and grow it with the depth-noise distance (in meters, not with viewing angle). In Vert:
+   `float d = distance(cameraWS, positionWS); float pullMeters = clamp(_NoiseK * d * d, _MinPull, _MaxPullMeters); float bias = saturate(pullMeters / d);`
+   Suggested values: _NoiseK ≈ 0.01, _MinPull ≈ 0.02 m, _MaxPullMeters ≈ 0.10 m. Alternatively, lower the defaults to _HeightTolerance ≈ 0.04 and _MaxDepthBias ≈ 0.08 in ARToolkitSurface.shader:29-30.
+2. For surfaces that get the depth correction, give RoomSurfaceView its own copies of the fill and outline materials with `_HeightTolerance = 0` and `_DepthBias = _MaxDepthBias ≈ 0.003`. The Write pass already stores 1.004·d, so no more is needed.
+3. Make the correction exist in builds: create ARToolkitSurfaceDepth.mat and assign it to theme.surfaceDepthMaterial, calling ToolkitAssets.EnsureRoomScanMaterials from an IPreprocessBuildWithReport. Also lower SurfaceDepthMaterials.PullHeight to ~0.05 and MaxPull to ~0.10, so people and chair backs in front of desks keep their measured depth.
+4. Occluders: build the occluder top 1–2 cm below the level height (SurfaceMeshBuilder.AddOccluder, use height − 0.015 for the copied fill vertices). The table's own grid then passes with a small constant bias, and the floor grid no longer leaks onto the bottom 12 cm of occluder walls.
+5. The desk-outline overhang over chairs (the geometric cause) is a separate fix: clip the plane or scan outline by occupancy, or with depth-based free-space carving.
+
+## [medium] Surface Depth Write erases real obstacles up to 15 cm (height along the ray) above each scanned surface
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\SurfaceDepthMaterials.cs:15
+MECHANISM: Mark pulls the surface by min(0.15/H, 0.35) of the distance (PullHeight 0.15, MaxPull 0.35; ARToolkitSurfaceDepth.shader:86-89). It sets stencil wherever the measured depth is not nearer than that. Write then overwrites those pixels with the surface depth ×1.004 using ZTest Always. So real geometry within 15 cm above the floor is removed from the depth buffer: chair and desk leg bases, feet, bags. Combined with the grid's own 12 cm pull, the grid is drawn over them. This is a deliberate trade-off, but it is height-along-the-ray and not a classification of points by their world height, so obstacles are removed along with the noise. Applies only when the material is present (see the first defect).
+-- VERDICT refuted=true
+REASONING: The shader math matches the claim, but this code path does not run in the Android build of the project as it is now, so it cannot cause S4 on the phone.
+
+1) The material is missing on the phone. RoomScanner is added at runtime (ARToolkitManager.EnsureRoomScanner). Its Initialize call gets theme.SurfaceDepthMaterial, and that is null: Settings/ARToolkitTheme.asset has an occluderMaterial entry but no surfaceDepthMaterial entry. There is also no Materials/ARToolkitSurfaceDepth.mat. The code then falls back to Shader.Find("Erasmus AR Toolkit/Surface Depth"). Nothing that goes into a build references that shader: its GUID 33b60bb0a13ec8c4c901e4e6256504fd appears only in its own .meta file. It is not in m_AlwaysIncludedShaders, not in a Resources folder, and not in a .shadervariants file. In a player build Shader.Find therefore returns null and CreateFallbackMaterial returns null. The code says this itself at RoomScanner.cs:452-453. The result is new SurfaceDepthMaterials(null): IsAvailable is false and Acquire() returns -1, so LevelView never creates the "Depth Mark" or "Depth Write" renderers. No depth is replaced on the phone. The path does run in the Editor (Shader.Find works there) and in the play-mode tests (ConfigureForTests passes a material). It would also run on the phone after Tools > Run Setup, which calls ToolkitAssets.EnsureRoomScanMaterials to create the .mat and assign it to the theme.
+
+2) If the material were present, the mechanism is real, with one correction. Mark uses ZTest LEqual with stencil Replace. The fill mesh is pulled toward the camera by pull = min(0.15/|camY - vertY|, 0.35). Mark passes, and marks the pixel, wherever the measured depth is no nearer than the pulled point. Write then runs with ZTest Always, ZWrite On and stencil Equal, and writes the surface depth x1.004. So any real point up to 15 cm above the surface loses its depth: bottoms of chair and desk legs, shoes, bags, and books on desks. The correction is that this is a classification by world height after all. For a horizontal surface, the point at fraction (1 - pull) along the view ray is exactly pull*H = 0.15 m above the plane. The pull is constant across a horizontal mesh, and scaling about the camera keeps the triangles planar. The only difference is at low camera heights (H < 0.43 m), where MaxPull 0.35 lowers the threshold to 0.35*H. The real problem is not "ray versus world height". It is that one fixed height threshold cannot tell depth noise from low obstacles.
+
+3) Cause of S4 on the phone. The grid pull in ARToolkitSurface.shader is active on the phone (ARToolkitPlane.mat and ARToolkitPlaneEdge.mat use that shader). _HeightTolerance is not saved in the .mat, so it takes the shader default of 0.12. That already draws the floor grid over the bottom ~12 cm of chair legs, and the desk-height outline over anything up to ~12 cm above the desk plane along the ray (for example chair backs). Thin legs that ARCore Depth (Fastest, smoothed) misses entirely also show grid. Surface Depth would only raise this from 12 to 15 cm for the grid. Its bigger effect would be removing leg and desk-clutter occlusion for placed virtual objects, but on the phone it is not running today.
+CORRECTED: On the Android build as it stands, SurfaceDepthMaterials has no source material. The theme has no surfaceDepthMaterial, no .mat exists, and Shader.Find returns null in the player. So Acquire() returns -1 and no depth replacement happens: this code does not contribute to S4 on the phone. The phone's S4 comes from the grid/outline pull in ARToolkitSurface.shader (_HeightTolerance 0.12 m, from the shader default). That pull draws the floor grid over the bottom ~12 cm of chair legs, and the desk outline over anything up to ~12 cm above the desk plane along the ray. ARCore Fastest depth also smooths away thin legs. The Surface Depth trade-off is latent. Once Run Setup creates ARToolkitSurfaceDepth.mat and assigns it to the theme, it removes the measured depth of every real point up to 0.15 m of world height above each scanned surface (min(0.15, 0.35*H) at low camera heights). Within the fill mesh's screen footprint, the grid is then drawn over those points and placed virtual objects are no longer occluded by them. The claim's point that it is "not world height" is wrong: for horizontal surfaces the pull fraction is exactly a world-height threshold. The actual flaw is that one fixed height threshold removes real low obstacles together with depth noise.
+FIX: Only needed if or when the material is enabled.
+(a) Lower PullHeight to about 0.04-0.06 m: ARCore floor noise is a few cm, and 15 cm is table-clutter and leg-base height. Also scale it with distance, for example pullHeight = clamp(k*d², 0.02, 0.08), matching ARCore's error that grows with the square of distance.
+(b) Better: skip the depth rewrite in cells the room scan has marked as obstacle footprints. Build an obstacle/occupancy mask in RoomSurfaceMap from depth points more than ~3-5 cm above the level. Cut those cells out of the fill mesh used by Depth Mark/Write, or use a separate "depth-steady" mesh that is the fill minus obstacle cells dilated by ~5 cm. Then chair legs, bags and desk clutter keep their measured depth.
+(c) Also lower the grid's _HeightTolerance in ARToolkitSurface.shader from 0.12 to about 0.05, or use the same obstacle-carved mesh, so the grid stops drawing over leg bases.
+(d) Separately, decide whether the depth correction should ship at all. Right now it silently does not, because the shader never reaches the player. Either create and assign ARToolkitSurfaceDepth.mat on the theme (Run Setup / an IPreprocessBuildWithReport check) or remove the feature.
+
+## [medium] Scanned surfaces are world-space and never anchored; placed objects sit on free ARAnchors, so they drift apart
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomSurfaceView.cs:105
+MECHANISM: The root 'Room Surfaces (scanned)' is created at the world origin with no parent or anchor (RoomSurfaceView.cs:99-110). Cells are keyed by world x/z (RoomSurfaceMap.CellOf, RoomSurfaceMap.cs:69-72) at a world-Y level.Height. The Depth Mark/Write meshes are the same world-space meshes. Placed objects are parented to a free ARAnchor (ARToolkitManager.cs:312-316), and ARPlanes live under TrackablesParent. When ARCore corrects drift or relocalizes, anchors and planes are moved but the scanned grid and its depth correction are not. The grid then ends up below or above the real floor and slides relative to the tiles, and anchored objects move relative to the drawn floor and its written depth. After FinishScan nothing updates the model (Integrate runs only while IsScanning, RoomScanner.cs:129-153), so the error grows while the user walks around the classroom.
+-- VERDICT refuted=false
+REASONING: I could not refute this. Every code fact in the claim checks out, and nothing in the code guards against it. The one runtime premise is that ARCore moves anchors and planes when it corrects drift or relocalizes, but leaves plain world-space content where it is. That is documented ARCore behaviour and is the reason anchors exist. It holds here: this is not a coordinate-space mistake. Depth points, plane priors, the meshes and the Surface Depth shader all use the same Unity world space (root at identity), so the model lines up with reality at the moment it is captured. It just never follows ARCore's later corrections.
+
+How it plays out:
+(a) While scanning, frames taken before and after a correction are written into the same world-keyed cells, and height samples keep piling up without ever fading. So a correction smears edges and shifts each level's height only slowly.
+(b) While scanning, plane priors are re-read from the corrected ARPlanes every 0.5 s, but the hit/miss evidence and the mesh stay in the old frame. The two can disagree, which adds to S3.
+(c) After FinishScan nothing updates. Update() returns early, and the trackablesChanged listener is removed in StopScanning. The grid, the table occluders and the Depth Write stay fixed, while each placed box follows its own ARAnchor.
+
+Where the claim goes too far:
+1. Direction. Drift corrections can go any way, so this cannot explain a floor grid that is consistently BELOW the real floor. In one classroom the vertical error is usually a few cm; it gets larger after tracking loss or relocalization. A consistent downward bias would need another cause, for example in DepthGeometry or the depth mapping (not checked here).
+2. S2 (jagged bottom). The Depth Write is a flat plane: the Write pass has ZTest Always and ZWrite on, drawing the grid mesh. If the anchor drops below the frozen grid, the box is cut by a straight line, not a jagged one. A jagged, torn edge comes from raw environment depth in pixels the Mark pass did not stencil: real depth more than 15 cm (_PullHeight) above the surface, grid holes, or edges of the shown cells. If the anchor rises, it floats above the grid and nothing is cut. Right after placement the anchor and the grid are at exactly the same height, because the pose comes from map.Raycast at level.Height. So a screenshot taken right after placing cannot show a drift effect at all.
+3. Anchors are created with AddComponent<ARAnchor>(). AR Foundation 6 still supports this through the old synchronous manager.TryAddAnchor path, so the anchor really is tracked and moved by ARCore. That part of the claim holds.
+
+Bottom line: this is a real, confirmed latent defect: the scan model has no anchor, placed objects have separate anchors, and nothing updates after the scan. It adds to 'grid slides against the tiles when I walk around' and to objects slowly sinking into or floating off the drawn floor. It is not a proven root cause of a systematic below-floor offset, and it does not explain the jagged edge in S2.
+CORRECTED: The scan model (cells, level heights, grid, occluders and Depth Write) is frozen in Unity world space as it was when captured. Placed boxes, and ARPlanes while scanning, sit under TrackablesParent and are moved by ARCore whenever it corrects drift or relocalizes.
+- While scanning: frames before and after a correction are fused into the same world cells, and the cumulative height histogram lags behind. The result is smeared or doubled edges and a height that moves slowly. Plane priors (re-read every 0.5 s from the corrected planes) also disagree with the evidence, which adds to S3.
+- After FinishScan: the grid and its depth correction never move, while each anchored box follows its anchor. The error builds up as the user walks, especially after tracking loss.
+
+The offset can go any way (usually a few cm, more after relocalization), so it does not explain a floor that is consistently below the real one. If an anchor drops below the frozen Depth Write, the box gets a straight cut. The jagged S2 edge instead comes from raw environment depth wherever the Mark stencil fails: real depth more than 15 cm above the surface, grid holes, cell edges. At the moment of placement the anchor and the grid are at exactly the same height.
+FIX: 1. One reference frame for the scan and the placed objects. At StartScan, call `ARAnchorManager.TryAddAnchorAsync(new Pose(floorGuess, Quaternion.identity))`; it is better to use `AttachAnchor(floorPlane, pose)` on the biggest HorizontalUp plane. Parent "Room Surfaces (scanned)" to that anchor (SetParent(anchor.transform, false)).
+2. Store the map in the anchor's local space:
+   - In Integrate, turn frame.Origin and every point into anchor-local coordinates with `anchor.transform.InverseTransformPoint` before map.Integrate.
+   - In ArcorePlanePriors, do the same with anchor.worldToLocalMatrix * plane.localToWorldMatrix.
+   - In TryGetPose, raycast with the ray converted to local space, then turn the pose back into world space with anchor.transform.TransformPoint and TransformRotation.
+   - Level heights then mean 'local y', and the meshes are already built in local coordinates.
+3. Placement: parent placed objects to the same room anchor (or under the scan root) instead of a separate free ARAnchor at ARToolkitManager.cs:312-316. Then the grid, the Depth Write and the objects can no longer move apart.
+4. For room-scale accuracy, anchor each 2-3 m region of chunks separately (one ARAnchor per region, keeping the 32x32-cell chunks) rather than using one anchor for the whole room. This avoids lever-arm errors far from a single anchor.
+5. Keep improving at low cost after FinishScan: keep the trackablesChanged listener, and run Integrate at a low rate (for example 2 Hz) with only the height update (AddHeightSample/RefreshHeight). Make the height histogram decay (for example multiply binCounts and binSums by 0.98 each frame) so a correction is absorbed in seconds.
+6. Handle ARSession tracking loss. When the session goes back to SessionTracking after a loss (tracking was lost for longer than a threshold), re-check each level's height against fresh depth points before trusting the Depth Write again.
+
+=================== AREA scene-config ===================
+
+## [high] Scanned room model is not anchored and is not under TrackablesParent, so it drifts away from the real floor
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Scanning\RoomSurfaceView.cs:105
+MECHANISM: RoomSurfaceView creates a scene-root GameObject 'Room Surfaces (scanned)' at the world origin. It draws world-space fill, outline, occluder and depth meshes under it (class doc line 15, Root getter 99-110). RoomSurfaceMap stores world XZ cells and world Y level heights. Only placed objects get an ARAnchor (ARToolkitManager.cs:299-317). Nothing subscribes to plane pose updates, ARSession.stateChanged or relocalization to re-align the model. When ARCore refines its map (plane heights change by a few cm, loop closure, relocalization after tracking loss or app pause), ARPlanes and anchored objects move but the scanned grid, table occluders and depth correction stay at the old pose. The grid then sits below (or above) the real floor and its perspective no longer matches the tiles, and anchored boxes separate from the scanned surface. During a scan, ArcorePlanePriors (ArcorePlanePriors.cs:29) feeds the new plane heights while old depth-fused cells keep the old ones, so the fused level height is pulled between the two.
+-- VERDICT refuted=false
+REASONING: The core of the claim holds up in the code, but several supporting details are wrong or irrelevant.
+
+WHAT IS TRUE
+1. The scanned model lives in fixed world coordinates, has no anchor, and nothing re-aligns it:
+- RoomSurfaceView.cs:105 creates a root at scene level with an identity pose. LevelView/Part are parented under it with SetParent(parent, false) (lines 125, 176).
+- Mesh vertices come from world-space data: RoomScanner.DrawLevel -> builder.Build(grid, level.Height, ...) at line 351, using world-XZ cells and a world-Y level.Height.
+- DepthScanSource.Sample (lines 204-229) turns depth points into world space with camera.cameraToWorldMatrix at the moment the frame arrives. Those points are then fused into log-odds cells and height bins for good.
+- Only placed objects get an ARAnchor (ARToolkitManager.cs:312-315).
+- No code subscribes to ARSession.stateChanged or to anchor or relocalization events. A grep for stateChanged, TrackablesParent and MakeContentAppearAt found only ARToolkitManager.cs:308.
+- The only plane subscription is RoomScanner.cs:179. It exists only while scanning and is removed in StopScanning (line 266). Update() returns right away when !IsScanning (lines 131-134). So after FinishScan the heights, cells and meshes are frozen.
+
+2. ARCore documents that the numeric coordinates of the camera and anchors "can change significantly" as its model of the world improves, and that content can drift unless it is attached to an anchor (developers.google.com/ar/develop/anchors). So when ARCore corrects its map, ARPlanes and the anchored boxes move but the scanned grid, table occluders and depth-correction mesh stay put. After the scan, placement uses map.Raycast (ARPlacementSurface.cs:36-38) and the object is then anchored. Because the anchor follows ARCore corrections and the grid does not, the two can separate later.
+
+3. This code runs on Android with ARCore depth. DepthScanSource is the precise source (RoomScanner.cs:418). The only guard is isTracking() in Integrate (line 280), which pauses fusion while tracking is lost. It does not re-align anything after tracking recovers or relocalizes.
+
+WHAT IS WRONG OR OVERSTATED
+a) "Not under TrackablesParent" makes no difference. The XR Origin, its parent and the Camera Offset all have identity transforms (ARScene.unity:778-780, 267-269, 934-936; the parent is a scene root, m_Father 0). m_RequestedTrackingOriginMode is 0 (NotSpecified), and no code ever moves the origin. So world space equals session space, and a root parented under TrackablesParent would behave exactly the same. ARCore corrections reach Unity as per-trackable pose updates, not as an origin move, so re-parenting alone would fix nothing. Only an anchor helps.
+
+b) The claim that ArcorePlanePriors "pulls the fused level height" is false:
+- AddPrior (RoomSurfaceMap.cs:108-151) only sets Prior flags. It picks the level with EnsureLevel(height) (lines 84-94), which snaps to any existing level within LevelMergeDistance = 0.10 m and never changes Height.
+- Height is computed only from SeedHeight (worth 20 pseudo-samples) plus depth samples fed through AddHeightSample/RefreshHeight (SurfaceLevel.cs:86-137).
+- A changed plane height has an effect only if it is more than 10 cm from every level, in which case a new level is created.
+The real mixing works differently:
+- binCounts and binSums never decay, so height samples taken before a correction stay in the estimate.
+- RefreshHeight averages the most crowded 5 cm window. A vertical correction under about 2 cm blends old and new heights. A larger one keeps the old peak until the new samples outnumber the old ones.
+- Priors are cleared and rebuilt from the corrected plane polygons on every UpdatePriors (ArcorePlanePriors.cs:13 and 22-29), but the log-odds evidence stays at the old XZ cells. Prior-backed cells and evidence cells then disagree, which can contribute to ragged or doubled edges (partly S3).
+
+c) Direction and size: drift has no preferred direction, so it cannot explain a grid that is systematically below the floor. With ARCore's gravity-aligned tracking, vertical corrections inside one room are usually a few cm, and they get larger after tracking loss, relocalization or app pause. So this is a real, latent contributor to S1 (grid at the wrong height, grid and boxes separating over time, depth-correction and occluder meshes sitting at a stale height, which could cleanly clip a box bottom as in S2). It is unlikely to be the main cause of a consistent sink below the floor. The mismatch between the grid cells and the real tiles is mostly unavoidable in any case: the virtual grid spacing has nothing to do with the tile size, and a height error only makes it worse.
+
+VERDICT: the defect is real (a world-locked, unanchored model that is never re-aligned). The "TrackablesParent" part and the "priors pull the height" part are wrong, and the claimed effect on symptoms should be treated as contributing, not primary.
+
+Source: https://developers.google.com/ar/develop/anchors
+CORRECTED: The scan fuses depth points into world coordinates using the camera pose at the time of each frame (DepthScanSource.Sample). It keeps them in fixed world-XZ cells and a world-Y level height, and draws the fill, outline, occluder and depth-correction meshes in that fixed world frame. No anchor holds the model and nothing re-aligns it, and after FinishScan nothing updates it at all.
+
+When ARCore refines its map (drift correction, loop closure, relocalization after tracking loss or app pause), the numeric coordinates of ARPlanes and ARAnchors change to stay locked to the real world, but the scanned model does not move. The grid, the table occluders and the depth-write surface can therefore end up a few cm (more after relocalization) above or below the real floor, and anchored boxes can separate from the drawn surface.
+
+During a scan there is also mixing. Height bins never decay, so depth samples from before and after a correction blend in RefreshHeight. Prior flags are rebuilt from the corrected planes while log-odds cells stay at the old XZ positions. Plane priors do not change level heights at all. Whether the model sits under TrackablesParent is irrelevant, because the XR Origin is at identity and never moves.
+
+The error has no preferred direction and is usually centimeter-scale, so it contributes to S1, S2 and S3 but does not by itself explain a grid that is consistently below the floor.
+FIX: 1) Anchor the model. When the scan starts (or when the first floor level is confirmed), create an ARAnchor. Best option: `anchorManager.AttachAnchor(floorPlane, pose)` on the floor ARPlane; otherwise a plain `AddComponent<ARAnchor>()` on a GameObject under XROrigin.TrackablesParent. Parent the "Room Surfaces (scanned)" root under it with a local identity pose.
+2) Store the map in anchor-local space. In RoomScanner.Integrate, before map.Integrate(frame), transform frame.Origin and every point with `anchor.transform.worldToLocalMatrix`. In TryGetPose, transform the ray into anchor-local space, raycast, then transform the pose back with `localToWorldMatrix`. Then ARCore corrections move the whole model rigidly with the anchor. ARCore recommends keeping content within about 8 m of an anchor, which a classroom satisfies.
+3) Let the fused height track the latest estimate. Decay binCounts and binSums each frame, e.g. multiply by 0.98 in SurfaceLevel.RefreshHeight, so samples from before a correction fade out. Optionally, after the scan, keep the floor level's Height following its attached ARPlane (plane.transform.position.y) if that stays within about 3 cm.
+4) Subscribe to ARSession.stateChanged. When tracking comes back as SessionTracking after a loss, run a scan pass to rebuild priors and heights (or ask the user to rescan) instead of silently keeping a stale model.
+
+## [high] Surface Depth shader is not part of the build: theme has no surfaceDepthMaterial and the runtime falls back to Shader.Find
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Settings\ARToolkitTheme.asset:20
+MECHANISM: ToolkitTheme.cs:24-25 declares surfaceDepthMaterial, but ARToolkitTheme.asset serializes only ground, highlight, imageTarget, labelBackground and occluder materials. Assets/ErasmusARToolkit/Materials has no ARToolkitSurfaceDepth.mat. The shader GUID 33b60bb0a13ec8c4c901e4e6256504fd is referenced by no .mat/.asset/.prefab/.unity file. GraphicsSettings Always Included Shaders does not list it, and it is not under a Resources folder. ARToolkitManager.EnsureRoomScanner passes theme.SurfaceDepthMaterial = null (ARToolkitManager.cs:212-213), so RoomScanner.GetSurfaceDepthMaterial falls back to Shader.Find (RoomScanner.cs:465-486). In an Android player an unreferenced shader is stripped, so Shader.Find returns null and only a warning is logged. SurfaceDepthMaterials.Acquire then returns -1 (SurfaceDepthMaterials.cs:44-49), so no Depth Mark/Write parts are created (RoomSurfaceView.cs:133-139). The 'steady surface depth' feature is silently off on the phone. ToolkitAssets.EnsureRoomScanMaterials (ToolkitAssets.cs:95-108) would fix this, but it only runs from Setup or SceneBuilder: there is no pre-build hook and ConfigValidator does not check theme materials. How to confirm: logcat shows "Shader 'Erasmus AR Toolkit/Surface Depth' is missing".
+-- VERDICT refuted=false
+REASONING: I read every file in the chain and found nothing that stops the failure. The claim holds.
+
+1. The theme asset does not have the field at all. ToolkitTheme.cs:24-25 declares `surfaceDepthMaterial`, but ARToolkitTheme.asset:15-19 stores only ground, highlight, imageTarget, labelBackground and occluder. The `surfaceDepthMaterial` key is missing entirely, not just set to fileID 0. So the asset was last saved by an older toolkit version, before the field existed. git status shows the file unmodified, so the committed state is the current state.
+
+2. Nothing puts the shader in a player build:
+   - The shader GUID 33b60bb0a13ec8c4c901e4e6256504fd appears only in its own .meta file. No .mat, .asset, .prefab or .unity references it.
+   - Materials/ has no ARToolkitSurfaceDepth.mat. ARToolkitOccluder.mat does exist.
+   - GraphicsSettings m_AlwaysIncludedShaders lists only 7 built-in shaders (fileID 7, 15104-15106, 10753, 10770, 10783).
+   - The shader is not in any Resources folder. The only Resources folders are under TextMesh Pro and XR.
+   - There is no ShaderVariantCollection, no Addressables package, and no other shader pulls it in through UsePass or Fallback (all use `FallBack Off`).
+   - Unity only builds shaders that something references, so in an Android player `Shader.Find("Erasmus AR Toolkit/Surface Depth")` returns null. In the Editor it succeeds, which hides the problem during Editor and XR Simulation testing.
+
+3. The code path runs on the phone:
+   - The build scenes (ARToolkitDemo.unity:1167 and ARScene.unity:247) reference the theme.
+   - RoomScanner is not serialized in any scene (its script GUID ecbba449... appears in no .unity or .prefab). ARToolkitManager.EnsureRoomScanner adds it at runtime (ARToolkitManager.cs:206-213), so `useOccluders` and `steadySurfaceDepth` keep their default of true (RoomScanner.cs:30-35).
+   - `Initialize` receives `theme.SurfaceDepthMaterial`, which is null.
+   - StartScan → Rebuild(true) → GetView (RoomScanner.cs:438-449) → GetSurfaceDepthMaterial → CreateFallbackMaterial → Shader.Find returns null → a warning is logged and null is returned (RoomScanner.cs:465-486).
+   - RoomSurfaceView builds `new SurfaceDepthMaterials(null)`. `Acquire()` returns -1 (SurfaceDepthMaterials.cs:44-49), so no Depth Mark or Depth Write part is ever created (RoomSurfaceView.cs:133-139).
+
+4. No safeguard catches it:
+   - The only code that creates and assigns the material is ToolkitAssets.EnsureRoomScanMaterials (ToolkitAssets.cs:95-108). It is reached only through GetOrCreateTheme, which is called only by ToolkitSetup.RunAll (Run Setup menu, Setup tab, BatchCommands.Setup) and SceneBuilder.
+   - BuildRunner.Build (BuildRunner.cs:54-85) and BatchCommands.BuildAndroid do not run setup.
+   - The only pre-build hook is ReferenceLibraryPreBuild, which only rebuilds the image library (ReferenceLibraryBuilder.cs:124-135).
+   - ConfigValidator does not look at the theme or its materials.
+   - HasAllMaterials (ToolkitTheme.cs:51-53) does not include occluder or surfaceDepth.
+   - The project's own editor test RealWorldOcclusionTests.cs:106-111 (`[TestCase("ARToolkitSurfaceDepth", ...)]`, which asserts the material is not null with "run Tools > Erasmus AR Toolkit > Run Setup") would fail against the current project.
+
+5. The symptom matches, in the stated direction:
+   - Real-world occlusion is on: ARToolkitConfig.cs:29 defaults `realWorldOcclusion` to true, and neither config asset overrides it. RealWorldOcclusion.Configure turns on AROcclusionManager, and the AR background then writes ARCore depth into the depth buffer.
+   - The shader header (ARToolkitSurfaceDepth.shader:1-14) describes exactly what is lost. Noisy ARCore depth measures the floor closer than it really is, in patches, and that hides the floor grid and the bottom of objects standing on it. Mark (queue 1960+2k) and Write (1961+2k) exist to replace that depth, before PlaneFill at 1990 and virtual objects at 2000.
+   - Without them, both the transparent grid (depth-tested) and the opaque box bottom are depth-tested against the raw noisy depth. The result is a torn or jagged box bottom (S2) and occlusion holes in the grid (part of S3). The direction is right: the real surface is measured nearer, so virtual content at floor height gets cut.
+
+Limits of the claim:
+- The correction only exists after a room scan (a level mesh in RoomSurfaceView). In plain ARCore-plane mode, S2 would happen even with the material present.
+- It only fixes pixels whose measured depth is at most 15 cm above the surface (PullHeight), and at most 8 surfaces (SurfaceDepthSlots).
+- It does not explain S1 (grid below the floor), or the ragged coverage edges, holes and islands of S3. Those come from the map, grid and filter, not from depth.
+CORRECTED: The mechanism is as claimed, with a narrower scope.
+
+In the Android player the Surface Depth shader is stripped, because no built asset references it. The theme asset was last saved before the surfaceDepthMaterial field existed, and Run Setup has not been run since, so there is no ARToolkitSurfaceDepth.mat. RoomScanner's Shader.Find fallback returns null (it only logs a warning), SurfaceDepthMaterials.Acquire returns -1, and no Depth Mark or Depth Write renderers are created. As a result, scanned surfaces never overwrite ARCore's noisy environment depth. The floor grid (queue 1990) and virtual objects (2000+) are depth-tested against raw depth that places the real floor a few centimeters too close, in patches. That cuts the bottom of floor-standing objects (S2) and punches occlusion holes into the scanned grid (part of S3).
+
+Scope:
+- It only matters after a room scan. ARCore-plane mode never had this correction.
+- It does not cause S1 (grid sinking below the floor).
+- It does not cause the coverage raggedness in S3 (blob edges, islands), which comes from RoomSurfaceMap, SurfaceGrid and SurfaceRegionFilter.
+- The Editor and XR Simulation hide the bug, because Shader.Find succeeds there.
+FIX: 1. Immediate: run Tools > Erasmus AR Toolkit > Run Setup (ToolkitSetup.RunAll → GetOrCreateTheme → EnsureRoomScanMaterials). It creates Assets/ErasmusARToolkit/Materials/ARToolkitSurfaceDepth.mat (queue 1960) and assigns it to ARToolkitTheme.asset. Commit both, then rebuild the APK.
+
+2. Make it robust by adding a pre-build hook in the Editor assembly:
+```csharp
+sealed class ThemeMaterialsPreBuild : IPreprocessBuildWithReport {
+    public int callbackOrder => -101;
+    public void OnPreprocessBuild(BuildReport r) {
+        var theme = ToolkitAssets.GetOrCreateTheme(); // runs EnsureRoomScanMaterials
+        if (theme.OccluderMaterial == null || theme.SurfaceDepthMaterial == null)
+            throw new BuildFailedException("[Erasmus AR Toolkit] Theme is missing room-scan materials. Run Setup.");
+    }
+}
+```
+
+3. Also:
+   - Extend ToolkitTheme.HasAllMaterials, or add a Setup-tab status row, to cover occluderMaterial and surfaceDepthMaterial.
+   - Belt-and-braces option: add "Erasmus AR Toolkit/Surface Depth" and "Erasmus AR Toolkit/Occluder" to GraphicsSettings Always Included Shaders, or put the .mat in a Resources folder and load it with Resources.Load as the fallback instead of Shader.Find.
+   - In CreateFallbackMaterial, use Debug.LogError in non-Editor builds so the problem shows up in logcat.
+
+## [high] Placed objects have no protection against noisy ARCore floor depth (before any scan)
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Runtime\Core\RealWorldOcclusion.cs:36
+MECHANISM: Occlusion is enabled by default (config field default true). It uses EnvironmentDepthMode.Fastest with PreferEnvironmentOcclusion (RealWorldOcclusion.cs:36-39), and ARCameraBackground writes that low-resolution, noisy depth into the depth buffer in BeforeOpaques mode. Placed objects use URP Lit (Samples/Materials/*.mat, shader 933532a4…) with a standard LEqual ZTest. Only the grid material has a depth pull toward the camera (ARToolkitSurface.shader:99-102). Where the real floor is measured a few cm too close, it hides the bottom of the box, giving a jagged, torn bottom edge. Rendering at renderScale 0.8 with MSAA off (Mobile_RPAsset.asset:28-29) makes the edge more jagged. Without a scan, and with defect #2 even with a scan, nothing replaces the floor depth near the object.
+-- VERDICT refuted=false
+REASONING: I could not refute this. The code shows that before a room scan, a placed object is depth-tested directly against raw ARCore environment depth. Nothing replaces or loosens that depth where the object touches the floor.
+
+1) The path runs on Android. The config field defaults to true (ARToolkitConfig.cs:29). Neither config asset (ARToolkitContent/ARToolkitConfig.asset, Samples/ARToolkitDemoConfig.asset) serialises a realWorldOcclusion key, so both keep the default true. ARToolkitManager.Awake calls RealWorldOcclusion.Configure(arCamera, config.RealWorldOcclusion) at lines 124-125. In ARScene.unity the XR Origin is saved inactive (line 740, m_IsActive: 0), so the AROcclusionManager is added before ARCameraBackground.Awake runs GetComponent<AROcclusionManager>() (ARCameraBackground.cs:214, which subscribes to frameReceived at 225-226). The only guard, TurnOffIfUnsupported (ARToolkitManager.cs:326-329, RealWorldOcclusion.cs:47-71), switches occlusion off only on phones without depth. Depth-capable phones keep it on.
+
+2) Depth is written before any virtual geometry. ARCameraManager m_RenderMode is 0 (Any) at ARScene.unity:485, and ARCoreCameraSubsystem.cs:254-256 maps Any to BeforeOpaques. Mobile_Renderer.asset contains ARBackgroundRendererFeature. ARCoreBackground.shader:27-28 uses ZTest Always / ZWrite On, and lines 135-145 write gl_FragDepth from _EnvironmentDepth when ARCORE_ENVIRONMENT_DEPTH_ENABLED is set. No ARShaderOcclusion component exists anywhere in Assets, so the early return at ARCameraBackground.cs:538 never fires.
+
+3) Placed objects have no tolerance. The Box prefab is a bottom-pivoted Unity cube (Box.prefab:31-32, child localPosition y 0.075, scale 0.15). Its material is URP Lit (SampleBlue.mat:24, shader guid 933532a4fcc9baf4fa0491de14d08ed7, _ZWrite 1, default LEqual, queue -1 so 2000). ToolkitObjectFactory.SpawnPlaceable (lines 9-21) adds no depth handling. The depth pull toward the camera exists only in the AR Surface shader (ARToolkitSurface.shader:97-102), which is used for plane fills, outlines and rings. Plane fills use ZWrite Off (line 51), so the ARCore plane under the object never corrects the depth buffer.
+
+4) The only correction, the Surface Depth mark/write pass, exists only after a scan. RoomSurfaceView is created in RoomScanner.GetView (RoomScanner.cs:438-449). GetView is called only from Rebuild (306-343), and Rebuild runs only from StartScan, FinishScan, ResetScan-while-scanning, or Update-while-scanning (129-153). StartScan is called only from ScanPanel.ToggleScan (ScanPanel.cs:51-61), which is a user button, not an auto-start. Before a scan, ARPlacementSurface.TryGetPose (lines 36-45) places on a raycast ARCore plane, snapped to the height of the largest plane in its group (PlaneGrouping.cs:9, 37-38). Planes up to 5 cm apart are grouped (HeightTolerance 0.05, line 16), so the base can sit a few cm below the depth-measured floor at that spot. The toolkit's own comment at ARToolkitSurfaceDepth.shader:1-3 says noisy floor depth "hides the floor grid and the bottom of objects standing on it", and the fix is applied only to scanned surfaces.
+
+5) The direction is right. Where ARCore measures the real floor nearer than the virtual base, the box's lowest fragments fail the LEqual test and are cut from the bottom up. The cut follows the low-resolution, bilinearly upsampled depth texture, which gives a ragged, torn bottom edge. That is S2. The grid itself survives because of its pull, which also matches the screenshots.
+
+6) Aliasing is confirmed. Android uses quality level 0, "Mobile" (QualitySettings.asset: Android 0, customRenderPipeline guid 5e6cbd92 = Mobile_RPAsset). Mobile_RPAsset.asset:28-29 sets m_MSAA 1 (off) and m_RenderScale 0.8, which makes the depth-cut edge more jagged.
+
+Corrections to the claim: EnvironmentDepthMode.Fastest is not really the cause. ARCore has essentially one depth pipeline, and any non-Disabled mode goes through the native provider (ARCoreOcclusionSubsystem.cs:73-79). Its depth image is low-resolution whatever the mode, so switching to Best would likely not fix it; temporal smoothing is also already requested. The root cause is hard per-pixel occlusion with zero height tolerance at the ground contact, plus a placement height taken from ARCore planes that can disagree with the depth-measured floor by a few cm. After a scan, protection covers only the shown scanned cells of up to 8 levels. Holes and ragged edges (S3) still fall back to raw depth, which is the claim's "defect #2" and is out of scope here.
+CORRECTED: Before a room scan, the ARCore background pass writes the smoothed, low-resolution ARCore depth into the depth buffer in BeforeOpaques mode. The ARCore plane under the object does not write depth (ZWrite Off), and the Surface Depth correction exists only after StartScan. A placed URP Lit object is therefore LEqual-tested against raw measured depth with zero tolerance.
+
+The object is placed at the height of the largest grouped ARCore plane (PlaneGrouping groups planes up to 5 cm apart). Wherever ARCore measures the floor, or the plane, a few cm nearer than that base, the lowest fragments of the object fail the depth test. They are cut in a ragged pattern that follows the upsampled depth texels. MSAA off and renderScale 0.8 make the edge look more stair-stepped.
+
+The Fastest mode is not the real cause. On ARCore, depth resolution does not effectively change with EnvironmentDepthMode. The problem is hard occlusion at the ground contact with no height tolerance. After a scan, the Surface Depth mark/write fixes this only on shown scanned cells, so holes and edges still cut.
+FIX: Option A, minimal and per object (works before and after a scan):
+1. In ToolkitObjectFactory.SpawnPlaceable, in AR mode only, add a child "Contact Depth" quad at local y = 0 (the base). Size it to the renderer bounds' XZ footprint plus about 25% (at least 10 cm margin).
+2. Draw it twice with the existing "Erasmus AR Toolkit/Surface Depth" shader, using a dedicated mark/write pair on free queues such as 1956/1957 (still before RoomOccluder 1988 and PlaneFill 1990).
+   - Mark: `_PullHeight` 0.15, ZTest LEqual, no ZWrite, stencil Always/Replace.
+   - Write: `_PushBack` about 0.004, ZTest Always, ZWrite On, stencil Equal/Zero.
+3. Real depth within 15 cm above the base is then replaced by the base plane's depth around the object. Real obstacles taller than that (chair legs, people) still occlude.
+
+Option B (also fixes the grid and floor before a scan): give each ARCore plane group the same mark/write pair on its plane mesh at the group height, as RoomSurfaceView does for scanned levels. Reserve stencil bit 128 for SurfaceDepth by lowering PlaneGrouping.StencilBitCount to 7. Otherwise, fall back to Option A.
+
+Optional extras:
+- Soft occlusion: ARShaderOcclusion plus a placed-object shader that ignores env depth when (fragment world y - base y) < about 0.08 m, and otherwise fades over a few cm instead of a hard cut.
+- Set Mobile_RPAsset m_MSAA to 4 and m_RenderScale to 1.0 to reduce stair-stepping. This is cosmetic only.
+- Changing EnvironmentDepthMode to Best will not fix it on ARCore.
+
+## [high] Only horizontal planes, no point cloud or mesh, no vertical surfaces: no obstacle geometry exists
+FILE: C:\Unity\ErasmusARToolkit\Assets\ErasmusARToolkit\Editor\Services\SceneBuilder.cs:81
+MECHANISM: Evidence: requestedDetectionMode = Horizontal (SceneBuilder.cs:81; ARScene.unity:757 and ARToolkitDemo.unity:725 m_DetectionMode: 1). No ARPointCloudManager in the scenes. No ARMeshManager, which ARCore cannot provide anyway (ARCoreLoader.cs:116-126). ARShaderOcclusion does not support ARCore (ARShaderOcclusion.cs:200-206). The room scan keeps only horizontal levels (README 'covers horizontal surfaces ... not walls'). Walls, desk sides, chair backs and other vertical obstacles are never represented, so nothing can carve or label obstacles, and the plane hulls at desk height extend over chairs.
+-- VERDICT refuted=true
+REASONING: Some of the claim is true, but the defect it describes, and the reason it gives for S4, don't hold up against the code.
+
+TRUE:
+(a) ARCore planes are requested as Horizontal only (SceneBuilder.cs:81; both scenes have m_DetectionMode: 1).
+(b) ARCore gives no meshing. ARCoreLoader.Initialize creates no XRMeshSubsystem.
+(c) The room scan only stores horizontal levels. The README calls this a scope limit: "covers horizontal surfaces (floors, tables, seats), not walls".
+So there is no model of walls, chair backs or desk sides, and nothing labels obstacles.
+
+FALSE or MISLEADING:
+1) "No point cloud." SceneBuilder.cs:87 adds a disabled ARPointCloudManager. FeaturePointScanSource.Begin (lines 39-49) adds or enables one at runtime when the scan runs without depth. Old scenes simply lack the serialized component.
+2) "Nothing can carve." Depth points of every orientation, vertical ones included, are used as ray end points for miss votes. Only hits require an up-facing normal (RoomSurfaceMap.cs:350-354 and 374-383). A ray from the camera to a chair seat, or to the floor under or beside a chair, crosses the desk height above the chair and carves that desk-level cell. This is exactly the mechanism meant to remove ARCore convex-hull overhang (RoomSurfaceMap.cs:12-14; SurfaceEvidence MissWeight/PriorWeight).
+3) "No obstacle geometry exists." Every level at least 0.15 m above the floor gets a depth-only occluder volume: the surface plus walls down to the floor (SurfaceMeshBuilder.cs:152-155 and 346-357; RoomScanner.cs:318). Tables and seats become occluding boxes.
+4) "Real obstacles do not occlude" / the ARShaderOcclusion citation. The toolkit does not use ARShaderOcclusion. It uses AROcclusionManager with ARCameraBackground environment-depth occlusion, which works on ARCore and is on by default (RealWorldOcclusion.cs:22-41; ARToolkitConfig.cs:29 realWorldOcclusion = true). The early return at ARShaderOcclusion.cs:200-206 is irrelevant here.
+5) The cause given for S4 is wrong. Setting Horizontal|Vertical at SceneBuilder.cs:81 would change nothing, because every consumer throws away non-horizontal planes (ARPlaneSurfaces.cs:140; ArcorePlanePriors.cs:16).
+   - Desk-height hulls "bleeding over chairs" are ARCore convex hulls. They show raw, uncarved, whenever no scan model exists (ARPlaneSurfaces draws them; RoomScanner suppresses them only while scanning or after HasModel). During a scan they carve only after enough miss votes beat the 0.5 prior.
+   - "Floor grid over chair legs" is better explained by the steady-surface-depth pass. It replaces measured depth with floor depth for any real point up to 0.15 m above a scanned surface (SurfaceDepthMaterials.cs:15, PullHeight = 0.15f; ARToolkitSurfaceDepth.shader:6-11). So the bottom of chair legs stops occluding the depth-tested grid (ARToolkitSurface.shader keeps the default ZTest, with ZWrite Off).
+
+Net: this is a documented feature gap (no vertical or obstacle model, which fits S5). It is not a scene-config defect at SceneBuilder.cs:81, and the stated evidence and cause for S4 are largely incorrect.
+CORRECTED: The toolkit keeps a 2.5D model of horizontal levels only. Depth points on vertical surfaces are not discarded: they carve levels they look through. Levels at least 0.15 m above the floor become extruded depth-only occluder boxes. Real-world per-pixel occlusion from ARCore Depth is active.
+
+What really is missing: any explicit vertical, obstacle or wall representation, and any labeling. The S5 feature gap is by design and documented, not caused by the plane-detection flag.
+
+The S4 symptoms come from other mechanisms:
+(1) Raw ARCore convex hulls are drawn whenever no scan model exists (ARPlaneSurfaces). During a scan, hull overhang over chairs only disappears after enough miss votes beat PriorWeight 0.5.
+(2) The Surface Depth pass overwrites real depth up to 0.15 m above the floor with floor depth, so the bottoms of chair legs no longer occlude the floor grid.
+FIX: This is not a config fix. Changing SceneBuilder.cs:81 alone has no effect. To add real obstacle geometry on ARCore:
+(1) In RoomSurfaceMap, add a 2.5D obstacle-occupancy grid, for example 5 cm columns with minimum and maximum occupied height above the floor. Fill it from the DepthScanSource points that are not up-facing and lie between floor + 0.05 m and camera height; use miss rays to clear it.
+(2) Draw the occupied columns as depth-only occluders (and optionally a debug visualization), and use them to carve or clip the floor and desk levels.
+(3) Optionally set `PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical`, and teach ArcorePlanePriors and ARPlaneSurfaces to accept vertical planes as wall priors.
+(4) For the chair-leg bleed, lower SurfaceDepthMaterials.PullHeight (for example to 0.03-0.05 m), or make it depend on distance.

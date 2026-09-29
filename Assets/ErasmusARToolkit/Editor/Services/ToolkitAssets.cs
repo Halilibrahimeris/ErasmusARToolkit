@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using UnityEngine.XR.ARFoundation;
+using UnityEngine.XR.ARSubsystems;
 
 namespace Erasmus.ARToolkit.Editor
 {
@@ -56,6 +57,12 @@ namespace Erasmus.ARToolkit.Editor
             return config;
         }
 
+        /// <summary>The theme asset, or null when the setup never ran. Only reads.</summary>
+        public static ToolkitTheme FindTheme()
+        {
+            return AssetDatabase.LoadAssetAtPath<ToolkitTheme>(ThemePath);
+        }
+
         public static ToolkitTheme GetOrCreateTheme()
         {
             var theme = AssetDatabase.LoadAssetAtPath<ToolkitTheme>(ThemePath);
@@ -83,28 +90,64 @@ namespace Erasmus.ARToolkit.Editor
             // The image target material shows stand-ins for the real world in Desktop mode (webcam picture,
             // simulated images), so it draws before the surface marks, like the AR camera image does.
             SetOpaqueRenderQueue(theme.ImageTargetMaterial, RenderOrder.CameraImage);
-            EnsureRoomScanMaterials(theme);
+            EnsureRoomScanAssets(theme);
             return theme;
+        }
+
+        /// <summary>The theme exists and has the room scan materials and shaders. Only reads.</summary>
+        public static bool HasRoomScanAssets()
+        {
+            var theme = FindTheme();
+            return theme != null && theme.HasRoomScanAssets;
         }
 
         /// <summary>
         /// Depth-only materials of the room scan: table occluders and the depth correction of scanned
-        /// surfaces. They live on the theme, which every toolkit scene references, so their shaders are part
-        /// of every build.
+        /// surfaces. They live on the theme together with their shaders. Every toolkit scene refers to the
+        /// theme, so the shaders are part of every build. Returns false when something is still missing.
         /// </summary>
-        static void EnsureRoomScanMaterials(ToolkitTheme theme)
+        public static bool EnsureRoomScanAssets(ToolkitTheme theme)
         {
-            var occluder = GetOrCreateShaderMaterial("ARToolkitOccluder", OccluderShader, RenderOrder.RoomOccluder);
-            var surfaceDepth = GetOrCreateShaderMaterial("ARToolkitSurfaceDepth", SurfaceDepthShader, RenderOrder.SurfaceDepth);
-            if (theme.OccluderMaterial == occluder && theme.SurfaceDepthMaterial == surfaceDepth)
+            if (theme == null)
             {
-                return;
+                return false;
             }
 
-            theme.SetOccluderMaterial(occluder);
-            theme.SetSurfaceDepthMaterial(surfaceDepth);
-            EditorUtility.SetDirty(theme);
-            AssetDatabase.SaveAssets();
+            var occluderShader = Shader.Find(OccluderShader);
+            var surfaceDepthShader = Shader.Find(SurfaceDepthShader);
+            var occluder = GetOrKeepShaderMaterial(theme.OccluderMaterial, occluderShader,
+                "ARToolkitOccluder", OccluderShader, RenderOrder.RoomOccluder);
+            var surfaceDepth = GetOrKeepShaderMaterial(theme.SurfaceDepthMaterial, surfaceDepthShader,
+                "ARToolkitSurfaceDepth", SurfaceDepthShader, RenderOrder.SurfaceDepth);
+            if (theme.OccluderMaterial != occluder || theme.SurfaceDepthMaterial != surfaceDepth
+                || theme.OccluderShader != occluderShader || theme.SurfaceDepthShader != surfaceDepthShader)
+            {
+                theme.SetOccluderMaterial(occluder);
+                theme.SetSurfaceDepthMaterial(surfaceDepth);
+                theme.SetRoomScanShaders(occluderShader, surfaceDepthShader);
+                EditorUtility.SetDirty(theme);
+                AssetDatabase.SaveAssets();
+            }
+
+            return theme.HasRoomScanAssets;
+        }
+
+        /// <summary>The theme's own material when it uses the shader (queue corrected), else the toolkit's.</summary>
+        static Material GetOrKeepShaderMaterial(Material current, Shader shader, string name, string shaderName,
+            int renderQueue)
+        {
+            if (current == null || shader == null || current.shader != shader)
+            {
+                return GetOrCreateShaderMaterial(name, shaderName, renderQueue);
+            }
+
+            if (current.renderQueue != renderQueue)
+            {
+                current.renderQueue = renderQueue;
+                EditorUtility.SetDirty(current);
+            }
+
+            return current;
         }
 
         /// <summary>A material asset with the given shader and render queue, made if missing. Null if the shader is missing.</summary>
@@ -242,10 +285,11 @@ namespace Erasmus.ARToolkit.Editor
 
         /// <summary>
         /// Adds a collider (ARPlaneMeshVisualizer fills it with the plane mesh) and the surface outline.
-        /// The outline is drawn twice as wide because the stencil hides its inner half. Returns true if
-        /// anything changed.
+        /// The outline is drawn twice as wide because the stencil hides its inner half. Planes are drawn
+        /// only while they are tracked: a plane with limited tracking has an unreliable pose. Returns true
+        /// if anything changed.
         /// </summary>
-        static bool ConfigurePlaneObject(GameObject plane, Material edgeMaterial)
+        internal static bool ConfigurePlaneObject(GameObject plane, Material edgeMaterial)
         {
             var changed = false;
             if (plane.GetComponent<MeshCollider>() == null)
@@ -253,6 +297,8 @@ namespace Erasmus.ARToolkit.Editor
                 plane.AddComponent<MeshCollider>();
                 changed = true;
             }
+
+            changed |= ShowOnlyWhileTracked(plane.GetComponent<ARPlaneMeshVisualizer>());
 
             var line = plane.GetComponent<LineRenderer>();
             if (line != null && (line.sharedMaterial != edgeMaterial
@@ -264,6 +310,26 @@ namespace Erasmus.ARToolkit.Editor
             }
 
             return changed;
+        }
+
+        /// <summary>Set on the serialized field: the property setter expects a running plane.</summary>
+        static bool ShowOnlyWhileTracked(ARPlaneMeshVisualizer visualizer)
+        {
+            if (visualizer == null)
+            {
+                return false;
+            }
+
+            var serialized = new SerializedObject(visualizer);
+            var threshold = serialized.FindProperty("m_TrackingStateVisibilityThreshold");
+            if (threshold == null || threshold.intValue == (int)TrackingState.Tracking)
+            {
+                return false;
+            }
+
+            threshold.intValue = (int)TrackingState.Tracking;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return true;
         }
 
         static Material GetOrCreatePlaneEdge(ToolkitTheme theme)

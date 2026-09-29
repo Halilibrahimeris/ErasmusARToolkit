@@ -8,8 +8,12 @@
             <!-- Shown while the room scan runs (AR mode). -->
             <ui:VisualElement name="scan-panel" class="scan-panel hidden">
                 <ui:Label name="scan-progress" class="scan-progress" text="Scanning..." />
+                <ui:Button name="scan-set-floor" class="scan-reset" text="Set Floor" />
                 <ui:Button name="scan-reset" class="scan-reset" text="Reset" />
             </ui:VisualElement>
+
+            <!-- What the room scan measures (config: Show Scan Diagnostics, or a development build). -->
+            <ui:Label name="scan-debug" class="scan-debug hidden" picking-mode="Ignore" />
 
             <ui:VisualElement name="middle" class="middle" picking-mode="Ignore">
                 <!-- Opens when an object is tapped: its info plus transform editing. -->
