@@ -180,6 +180,7 @@ namespace Erasmus.ARToolkit
                 anchor.localPosition = pose.position;
                 anchor.localRotation = pose.rotation;
                 anchor.gameObject.SetActive(true);
+                ImageTargetEvents.RaiseFound(item, anchor.GetComponentInChildren<ToolkitObject>(true));
             }
             else
             {

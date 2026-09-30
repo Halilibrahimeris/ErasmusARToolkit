@@ -342,3 +342,93 @@
     width: 320px;
     height: 100px;
 }
+
+/* Project modules: a line under the status line (route progress, vision filter, fill level) */
+.info-line {
+    margin: 10px 24px 0 24px;
+    padding: 12px 24px;
+    background-color: var(--panel-color);
+    border-radius: 18px;
+    border-left-width: 6px;
+    border-left-color: var(--accent-color);
+    color: var(--text-color);
+    font-size: 28px;
+    white-space: normal;
+    -unity-text-align: middle-left;
+}
+
+/* Project modules: what a story character says */
+.subtitle {
+    align-self: center;
+    max-width: 90%;
+    margin-bottom: 12px;
+    padding: 14px 28px;
+    background-color: rgba(0, 0, 0, 0.8);
+    border-radius: 18px;
+    color: var(--text-color);
+    font-size: var(--font-size);
+    white-space: normal;
+    -unity-text-align: middle-center;
+}
+
+/* Project modules: their buttons, in a row above the object bar */
+.module-buttons {
+    flex-shrink: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 0 24px 12px 24px;
+}
+
+.module-button {
+    height: 84px;
+    min-width: 220px;
+    margin: 0 8px 10px 8px;
+    padding: 0 20px;
+    border-width: 0;
+    border-radius: 18px;
+    background-color: var(--primary-color);
+    color: var(--text-color);
+    font-size: 30px;
+    -unity-font-style: bold;
+    transition-property: scale, background-color;
+    transition-duration: 0.1s;
+}
+
+.module-button:hover {
+    background-color: rgb(20, 80, 190);
+}
+
+.module-button:active {
+    scale: 0.95 0.95;
+}
+
+.module-button.active,
+.module-button.active:hover {
+    background-color: var(--accent-color);
+    color: var(--accent-text-color);
+}
+
+.module-buttons Slider {
+    min-width: 360px;
+    margin: 0 8px 10px 8px;
+    padding: 8px 16px;
+    background-color: var(--panel-color);
+    border-radius: 18px;
+}
+
+.module-buttons Slider #unity-dragger {
+    width: 44px;
+    height: 44px;
+    margin-top: -18px;
+    border-radius: 22px;
+    background-color: var(--accent-color);
+    border-width: 0;
+}
+
+.module-buttons Slider #unity-tracker {
+    height: 10px;
+    border-radius: 5px;
+    background-color: rgba(255, 255, 255, 0.3);
+    border-width: 0;
+}

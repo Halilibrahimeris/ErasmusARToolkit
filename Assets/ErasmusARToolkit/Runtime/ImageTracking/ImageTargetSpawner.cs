@@ -72,6 +72,10 @@ namespace Erasmus.ARToolkit
                     if (content.gameObject.activeSelf != visible)
                     {
                         content.gameObject.SetActive(visible);
+                        if (visible && lookup.TryGet(image.referenceImage.name, out var seenAgain))
+                        {
+                            ImageTargetEvents.RaiseFound(seenAgain, content);
+                        }
                     }
                 }
             }
@@ -96,8 +100,10 @@ namespace Erasmus.ARToolkit
             }
 
             var size = image.size.x > 0f ? image.size : item.PhysicalSize;
-            spawned[image.trackableId] = ToolkitObjectFactory.SpawnImageContent(item, image.transform, size,
+            var content = ToolkitObjectFactory.SpawnImageContent(item, image.transform, size,
                 manager.Theme, manager.Config.ScaleLimits);
+            spawned[image.trackableId] = content;
+            ImageTargetEvents.RaiseFound(item, content);
         }
     }
 }

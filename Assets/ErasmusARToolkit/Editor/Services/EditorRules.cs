@@ -129,4 +129,20 @@ namespace Erasmus.ARToolkit.Editor
             return width >= MinimumPixels && height >= MinimumPixels;
         }
     }
+
+    /// <summary>Video and sound files that work on phones.</summary>
+    public static class MediaFileRules
+    {
+        /// <summary>MP4 video (H.264 inside) plays on every Android phone.</summary>
+        public static bool IsPhoneFriendlyVideo(string assetPath)
+        {
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                return false;
+            }
+
+            var extension = Path.GetExtension(assetPath).ToLowerInvariant();
+            return extension == ".mp4" || extension == ".m4v";
+        }
+    }
 }

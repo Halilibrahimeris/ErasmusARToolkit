@@ -5,6 +5,9 @@
 
             <ui:Label name="status" class="status" text="Checking AR support..." />
 
+            <!-- Project modules: one line each (route progress, vision filter, fill level). -->
+            <ui:Label name="info-line" class="info-line hidden" picking-mode="Ignore" />
+
             <!-- Shown while the room scan runs (AR mode). -->
             <ui:VisualElement name="scan-panel" class="scan-panel hidden">
                 <ui:Label name="scan-progress" class="scan-progress" text="Scanning..." />
@@ -35,6 +38,7 @@
                     </ui:VisualElement>
                     <ui:VisualElement class="edit-row">
                         <ui:Button name="edit-label" class="edit-button" text="Show Card" />
+                        <ui:Button name="edit-media" class="edit-button hidden" text="Pause" />
                         <ui:Button name="edit-reset" class="edit-button" text="Reset" />
                         <ui:Button name="edit-delete" class="edit-button edit-delete" text="Delete" />
                     </ui:VisualElement>
@@ -53,6 +57,10 @@
             </ui:VisualElement>
 
             <ui:Label name="toast" class="toast" picking-mode="Ignore" />
+
+            <!-- Project modules: what a story character says, and the modules' buttons (added from code). -->
+            <ui:Label name="subtitle" class="subtitle hidden" picking-mode="Ignore" />
+            <ui:VisualElement name="module-buttons" class="module-buttons hidden" picking-mode="Ignore" />
 
             <!-- Buttons for the placeable objects are added from code (one per config entry). -->
             <ui:ScrollView name="placeables" class="placeables" mode="Horizontal"

@@ -139,6 +139,11 @@ namespace Erasmus.ARToolkit.Editor
             {
                 yield return $"Image '{target.ResolvedName}' is smaller than {ImageFileRules.MinimumPixels} px; it may not be detected.";
             }
+
+            if (target.Media.HasVideo && !MediaFileRules.IsPhoneFriendlyVideo(AssetDatabase.GetAssetPath(target.Media.Video)))
+            {
+                yield return $"The video of '{target.ResolvedName}' is not an MP4 file; Android phones play H.264 MP4 video.";
+            }
         }
 
         void CheckImageQuality()
@@ -222,6 +227,7 @@ namespace Erasmus.ARToolkit.Editor
                     element.FindPropertyRelative("displayName").stringValue = prefab.name;
                     element.FindPropertyRelative("prefab").objectReferenceValue = prefab;
                     element.FindPropertyRelative("defaultScale").floatValue = 1f;
+                    ModuleFieldDefaults.ResetPlaceable(element);
                 }
                 else if (dropped is Texture2D texture)
                 {
@@ -230,11 +236,48 @@ namespace Erasmus.ARToolkit.Editor
                     element.FindPropertyRelative("texture").objectReferenceValue = texture;
                     element.FindPropertyRelative("widthMeters").floatValue = 0.2f;
                     element.FindPropertyRelative("prefab").objectReferenceValue = null;
+                    ModuleFieldDefaults.ResetImageTarget(element);
                 }
             }
 
             serializedConfig.ApplyModifiedProperties();
             Validate();
+        }
+
+        /// <summary>
+        /// A new list element is a copy of the last one: the project module fields go back to their
+        /// defaults, so a dropped image does not become a video poster or a route stop by accident.
+        /// </summary>
+        static class ModuleFieldDefaults
+        {
+            public static void ResetImageTarget(SerializedProperty element)
+            {
+                var media = element.FindPropertyRelative("media");
+                if (media != null)
+                {
+                    media.FindPropertyRelative("video").objectReferenceValue = null;
+                    media.FindPropertyRelative("audio").objectReferenceValue = null;
+                    media.FindPropertyRelative("loop").boolValue = true;
+                    media.FindPropertyRelative("volume").floatValue = 1f;
+                }
+
+                var stop = element.FindPropertyRelative("routeStop");
+                if (stop != null)
+                {
+                    stop.FindPropertyRelative("order").intValue = 0;
+                    stop.FindPropertyRelative("nextHint").stringValue = string.Empty;
+                    stop.FindPropertyRelative("arrow").enumValueIndex = 0;
+                }
+            }
+
+            public static void ResetPlaceable(SerializedProperty element)
+            {
+                var placeOn = element.FindPropertyRelative("placeOn");
+                if (placeOn != null)
+                {
+                    placeOn.enumValueIndex = 0;
+                }
+            }
         }
 
         static SerializedProperty Append(SerializedProperty array)

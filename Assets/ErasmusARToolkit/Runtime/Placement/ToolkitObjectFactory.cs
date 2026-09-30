@@ -52,9 +52,28 @@ namespace Erasmus.ARToolkit
             var manipulator = instance.AddComponent<ObjectManipulator>();
             manipulator.Initialize(instance.transform.localScale, scaleLimits ?? new Vector2(0.2f, 5f), false);
 
-            // Without a prefab the label is the only content, so it is always shown.
-            var alwaysShowLabel = item.Prefab == null;
-            return Attach(instance, item.ResolvedName, item.Info, manipulator, theme, false, alwaysShowLabel);
+            // Without a prefab the label (or the video) is the content, so it is always shown.
+            var alwaysShowLabel = item.Prefab == null && !item.Media.HasVideo;
+            var content = Attach(instance, item.ResolvedName, item.Info, manipulator, theme, false, alwaysShowLabel);
+            if (item.Media.HasAny)
+            {
+                PosterPlayer.Attach(instance, item.Media, imageSize, theme);
+            }
+
+            return content;
+        }
+
+        /// <summary>
+        /// Makes any scene object tappable with an info card (see <see cref="InfoCard"/>): tapping it opens
+        /// the card and a read-only panel. Nothing can be moved, scaled or deleted.
+        /// </summary>
+        public static ToolkitObject AttachInfoCard(GameObject target, string displayName, InfoLabelData info,
+            ToolkitTheme theme)
+        {
+            ObjectUtility.EnsureCollider(target);
+            var toolkitObject = Attach(target, displayName, info ?? new InfoLabelData(), null, theme, false, false);
+            toolkitObject.ShowsLabelOnSelect = true;
+            return toolkitObject;
         }
 
         static ToolkitObject Attach(GameObject instance, string displayName, InfoLabelData info,

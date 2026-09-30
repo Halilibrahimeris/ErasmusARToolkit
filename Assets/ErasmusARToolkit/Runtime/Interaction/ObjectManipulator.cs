@@ -28,6 +28,9 @@ namespace Erasmus.ARToolkit
         /// </summary>
         internal float? MinLocalHeight { get; set; }
 
+        /// <summary>The object hangs on a wall: it turns around its own forward axis (the wall's normal).</summary>
+        internal bool OnWall { get; set; }
+
         /// <summary>Rotation around the parent's up axis, 0-360 degrees.</summary>
         public float YawDegrees => Mathf.Repeat(transform.localEulerAngles.y, 360f);
 
@@ -50,7 +53,8 @@ namespace Erasmus.ARToolkit
 
         public void RotateYaw(float degrees)
         {
-            transform.rotation = Quaternion.AngleAxis(degrees, UpAxis) * transform.rotation;
+            var axis = OnWall ? transform.forward : UpAxis;
+            transform.rotation = Quaternion.AngleAxis(degrees, axis) * transform.rotation;
         }
 
         /// <summary>Moves the object up (positive) or down along the surface normal.</summary>

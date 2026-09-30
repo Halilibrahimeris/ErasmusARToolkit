@@ -65,6 +65,7 @@ namespace Erasmus.ARToolkit
         Part wallFill;
         Part wallOutline;
         bool visible = true;
+        bool realWorldParts = true;
 
         /// <param name="surfaceRoot">Parent of the drawn surfaces. It belongs to the scan, not to the view.</param>
         /// <param name="fill">Grid material of the planes. The view draws with copies of its own.</param>
@@ -303,6 +304,19 @@ namespace Erasmus.ARToolkit
             wallOutline?.SetVisible(value);
         }
 
+        /// <summary>
+        /// Switches the occluders and depth corrections on or off (off while the camera picture is hidden:
+        /// the real world is not shown then, so it must not hide virtual content either).
+        /// </summary>
+        public void SetRealWorldParts(bool value)
+        {
+            realWorldParts = value;
+            foreach (var view in views.Values)
+            {
+                view.SetRealWorldParts(value);
+            }
+        }
+
         public void Clear()
         {
             foreach (var view in views.Values)
@@ -339,6 +353,7 @@ namespace Erasmus.ARToolkit
             {
                 view = new LevelView(root, levelId, this);
                 view.SetVisible(visible);
+                view.SetRealWorldParts(realWorldParts);
                 views.Add(levelId, view);
             }
 
@@ -532,6 +547,7 @@ namespace Erasmus.ARToolkit
                     depthMark = new Part(owner.transform, "Depth Mark", null, steadyMesh);
                     depthUnmark = new Part(owner.transform, "Depth Unmark", null, steadyMesh);
                     depthWrite = new Part(owner.transform, "Depth Write", null, steadyMesh);
+                    SetRealWorldParts(surfaceView.realWorldParts);
                 }
 
                 depthMark?.SetMaterial(steady ? materials.Mark(slot) : null);
@@ -544,6 +560,14 @@ namespace Erasmus.ARToolkit
             {
                 fill.SetVisible(value);
                 outline.SetVisible(value);
+            }
+
+            public void SetRealWorldParts(bool value)
+            {
+                occluder?.SetVisible(value);
+                depthMark?.SetVisible(value);
+                depthUnmark?.SetVisible(value);
+                depthWrite?.SetVisible(value);
             }
 
             public void Destroy()

@@ -70,6 +70,23 @@ namespace Erasmus.ARToolkit
         public string PreferredCameraName => preferredCameraName ?? string.Empty;
         public bool DesktopSimulateImageTargets => desktopSimulateImageTargets;
 
+        /// <summary>Some placeable objects hang on walls (the phone then looks for walls too).</summary>
+        public bool HasWallPlaceables
+        {
+            get
+            {
+                foreach (var item in placeables)
+                {
+                    if (item != null && item.PlaceOn == PlaceOn.Wall)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
         /// <summary>Editor and test helper. Runtime code never mutates the config.</summary>
         internal void SetContent(IEnumerable<PlaceableItem> newPlaceables, IEnumerable<ImageTargetItem> newImageTargets)
         {

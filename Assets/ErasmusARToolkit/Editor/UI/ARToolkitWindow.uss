@@ -190,3 +190,41 @@
 .scene-list > Label {
     margin-left: 6px;
 }
+
+/* Projects tab */
+.project-section {
+    margin-top: 6px;
+    padding: 2px 0 6px 0;
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(128, 128, 128, 0.3);
+}
+
+.project-section > .unity-foldout__toggle {
+    -unity-font-style: bold;
+    font-size: 13px;
+}
+
+.project-fields {
+    margin: 4px 0 4px 0;
+}
+
+.list-title {
+    margin-top: 6px;
+    -unity-font-style: bold;
+}
+
+.instance-row {
+    flex-direction: row;
+    align-items: center;
+    min-height: 22px;
+}
+
+.instance-row > Label {
+    flex-grow: 1;
+    flex-shrink: 1;
+    overflow: hidden;
+}
+
+.instance-row > Button {
+    width: 64px;
+}

@@ -42,6 +42,12 @@ namespace Erasmus.ARToolkit
         /// </summary>
         public const int RoomOccluder = 1988;
 
+        /// <summary>
+        /// Portals: the invisible shell around a portal world and its doorway. After the table occluders, before
+        /// the grids and the world behind the door.
+        /// </summary>
+        public const int PortalMask = 1989;
+
         /// <summary>AR plane grid fill.</summary>
         public const int PlaneFill = 1990;
 

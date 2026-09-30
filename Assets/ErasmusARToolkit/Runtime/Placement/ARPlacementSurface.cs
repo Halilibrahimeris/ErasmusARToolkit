@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
@@ -11,7 +12,7 @@ namespace Erasmus.ARToolkit
     /// After a room scan only the scanned surfaces count, so objects go where the grid is drawn.
     /// </summary>
     [RequireComponent(typeof(ARRaycastManager))]
-    public sealed class ARPlacementSurface : MonoBehaviour, IPlacementSurface
+    public sealed class ARPlacementSurface : MonoBehaviour, IPlacementSurface, IWallPlacementSurface
     {
         static readonly List<ARRaycastHit> Hits = new List<ARRaycastHit>();
 
@@ -52,6 +53,49 @@ namespace Erasmus.ARToolkit
             }
 
             pose = default;
+            return false;
+        }
+
+        /// <summary>
+        /// The wall under a screen point: a scanned wall after a room scan, else a vertical plane ARCore
+        /// found (walls with some texture: pictures, shelves, a door).
+        /// </summary>
+        public bool TryGetWallPose(Vector2 screenPosition, out Pose pose)
+        {
+            pose = default;
+            var origin = GetComponent<XROrigin>();
+            var viewCamera = origin != null ? origin.Camera : null;
+            if (viewCamera == null)
+            {
+                return false;
+            }
+
+            var ray = viewCamera.ScreenPointToRay(screenPosition);
+            if (scanner == null)
+            {
+                scanner = GetComponent<RoomScanner>();
+            }
+
+            if (scanner != null && scanner.HasModel && WallRaycast.TryHit(ray, scanner.Walls, out pose))
+            {
+                return true;
+            }
+
+            if (raycastManager == null || !raycastManager.enabled
+                || !raycastManager.Raycast(screenPosition, Hits, TrackableType.PlaneWithinPolygon))
+            {
+                return false;
+            }
+
+            foreach (var hit in Hits)
+            {
+                if (hit.trackable is ARPlane plane && plane.alignment == PlaneAlignment.Vertical)
+                {
+                    pose = WallRaycast.WallPose(hit.pose.position, plane.normal, ray.origin);
+                    return true;
+                }
+            }
+
             return false;
         }
 

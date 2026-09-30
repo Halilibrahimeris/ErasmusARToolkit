@@ -33,6 +33,7 @@ namespace Erasmus.ARToolkit
         Material material;
         int currentIndex = -1;
         bool busy;
+        bool imageHidden;
 
         /// <summary>Short user-facing messages (camera name, errors) for the HUD.</summary>
         public event Action<string> Notification;
@@ -45,6 +46,22 @@ namespace Erasmus.ARToolkit
 
         /// <summary>The live camera texture (null while the camera is off).</summary>
         public WebCamTexture Texture => IsRunning ? webcam : null;
+
+        /// <summary>The camera may run, but its picture is not drawn (a project module shows a virtual world).</summary>
+        public bool IsImageHidden => imageHidden;
+
+        /// <summary>
+        /// Hides the camera picture without stopping the camera (image recognition keeps working), or shows
+        /// it again. The HUD's Camera button still switches cameras.
+        /// </summary>
+        public void SetImageHidden(bool hidden)
+        {
+            imageHidden = hidden;
+            if (quad != null)
+            {
+                quad.gameObject.SetActive(!hidden && IsRunning);
+            }
+        }
 
         /// <summary>True when the displayed image is flipped upside down (see <see cref="CameraFeedLayout"/>).</summary>
         public bool IsFlippedVertically => webcam != null && webcam.videoVerticallyMirrored;
@@ -210,7 +227,7 @@ namespace Erasmus.ARToolkit
             busy = false;
             if (IsRunning)
             {
-                quad.gameObject.SetActive(true);
+                quad.gameObject.SetActive(!imageHidden);
                 Debug.Log($"[Erasmus AR Toolkit] Camera image {webcam.width}x{webcam.height}, " +
                           $"rotation {webcam.videoRotationAngle}, mirrored {webcam.videoVerticallyMirrored}.");
                 Notify("Camera: " + deviceName);

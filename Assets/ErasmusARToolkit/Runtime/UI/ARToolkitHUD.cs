@@ -18,6 +18,7 @@ namespace Erasmus.ARToolkit
         [SerializeField] InteractionController interaction;
 
         readonly List<Button> placeableButtons = new List<Button>();
+        readonly ModuleHud modules = new ModuleHud();
         UIDocument document;
         ScreenshotService screenshots;
         HudView view;
@@ -31,6 +32,17 @@ namespace Erasmus.ARToolkit
         {
             manager = toolkitManager;
             interaction = interactionController;
+        }
+
+        /// <summary>The module parts of the HUD (buttons, info line, subtitle).</summary>
+        internal ModuleHud Modules => modules;
+
+        void Awake()
+        {
+            if (manager != null)
+            {
+                manager.RegisterHud(this);
+            }
         }
 
         void Start()
@@ -50,6 +62,9 @@ namespace Erasmus.ARToolkit
                 enabled = false;
                 return;
             }
+
+            // Modules may have asked for buttons already (on PC the mode is known before the HUD starts).
+            modules.Bind(view.Root);
 
             try
             {
@@ -133,6 +148,47 @@ namespace Erasmus.ARToolkit
             toastHide = view.Toast.schedule.Execute(() => view.Toast.RemoveFromClassList(HudView.VisibleClass))
                 .StartingIn(ToastMilliseconds);
         }
+
+        /// <summary>CSS class of a module button that is switched on (for example "View: Virtual").</summary>
+        public const string ActiveButtonClass = "active";
+
+        /// <summary>
+        /// Adds a button to the module strip above the object bar. Works before the HUD has started too.
+        /// Remove it with <see cref="RemoveModuleButton"/>.
+        /// </summary>
+        public Button AddModuleButton(string text, System.Action onClick)
+        {
+            return modules.AddButton(text, onClick);
+        }
+
+        /// <summary>Adds any element (a slider, a label) to the module strip.</summary>
+        public void AddModuleElement(VisualElement element)
+        {
+            modules.Add(element);
+        }
+
+        public void RemoveModuleButton(VisualElement button)
+        {
+            modules.Remove(button);
+        }
+
+        /// <summary>
+        /// A line under the status line ("Route 2 / 6", "Vision: Protanopia"). One line per
+        /// <paramref name="owner"/>; an empty text removes it.
+        /// </summary>
+        public void SetInfoLine(object owner, string text)
+        {
+            modules.SetInfoLine(owner, text);
+        }
+
+        /// <summary>A subtitle above the object bar ("Ayse: Hello!"). An empty text removes it.</summary>
+        public void SetSubtitle(object owner, string text)
+        {
+            modules.SetSubtitle(owner, text);
+        }
+
+        /// <summary>The HUD layout has the module strip (layouts from older toolkit versions do not).</summary>
+        public bool HasModuleParts => modules.HasParts;
 
         void WireButtons()
         {

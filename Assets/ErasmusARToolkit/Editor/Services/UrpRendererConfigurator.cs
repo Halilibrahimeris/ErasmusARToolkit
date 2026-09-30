@@ -120,7 +120,8 @@ namespace Erasmus.ARToolkit.Editor
             get
             {
 #if ERASMUS_HAS_URP
-                return PlayerSettings.Android.optimizedFramePacing && FindAndroidAssets().All(asset => !asset.supportsHDR);
+                return PlayerSettings.Android.optimizedFramePacing
+                       && FindAndroidAssets().All(asset => !asset.supportsHDR && asset.opaqueDownsampling == Downsampling.None);
 #else
                 return true;
 #endif
@@ -138,6 +139,19 @@ namespace Erasmus.ARToolkit.Editor
                     asset.supportsHDR = false;
                     EditorUtility.SetDirty(asset);
                     Debug.Log($"[Erasmus AR Toolkit] HDR is now off in the URP asset '{asset.name}' (used on Android).", asset);
+                }
+
+                // The vision simulator filters the camera copy: at half size it would look blurred.
+                if (asset.opaqueDownsampling != Downsampling.None)
+                {
+                    var serialized = new SerializedObject(asset);
+                    var downsampling = serialized.FindProperty("m_OpaqueDownsampling");
+                    if (downsampling != null)
+                    {
+                        downsampling.intValue = (int)Downsampling.None;
+                        serialized.ApplyModifiedPropertiesWithoutUndo();
+                        Debug.Log($"[Erasmus AR Toolkit] The camera copy is full size now in '{asset.name}' (vision filters).", asset);
+                    }
                 }
             }
 

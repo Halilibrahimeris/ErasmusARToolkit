@@ -20,7 +20,12 @@ namespace Erasmus.ARToolkit
         readonly Slider scale;
         readonly Button labelButton;
         readonly Button deleteButton;
+        readonly VisualElement rotateRow;
+        readonly VisualElement heightRow;
+        readonly Button resetButton;
+        readonly Button mediaButton;
         ToolkitObject target;
+        VideoSurface media;
 
         public EditPanel(VisualElement hudRoot, ARToolkitManager toolkitManager, InteractionController controller)
         {
@@ -35,11 +40,23 @@ namespace Erasmus.ARToolkit
             deleteButton = Require<Button>(hudRoot, "edit-delete");
 
             Require<Button>(hudRoot, "edit-close").clicked += interaction.ClearSelection;
-            Require<Button>(hudRoot, "edit-rotate-left").clicked += () => Edit(m => m.RotateYaw(-RotateStepDegrees));
+            var rotateLeft = Require<Button>(hudRoot, "edit-rotate-left");
+            rotateLeft.clicked += () => Edit(m => m.RotateYaw(-RotateStepDegrees));
             Require<Button>(hudRoot, "edit-rotate-right").clicked += () => Edit(m => m.RotateYaw(RotateStepDegrees));
-            Require<Button>(hudRoot, "edit-lower").clicked += () => Edit(m => m.Raise(-RaiseStepMeters));
+            var lower = Require<Button>(hudRoot, "edit-lower");
+            lower.clicked += () => Edit(m => m.Raise(-RaiseStepMeters));
             Require<Button>(hudRoot, "edit-raise").clicked += () => Edit(m => m.Raise(RaiseStepMeters));
-            Require<Button>(hudRoot, "edit-reset").clicked += () => Edit(m => m.ResetPose());
+            resetButton = Require<Button>(hudRoot, "edit-reset");
+            resetButton.clicked += () => Edit(m => m.ResetPose());
+            rotateRow = rotateLeft.parent;
+            heightRow = lower.parent;
+
+            // Optional: layouts made for older toolkit versions have no media button.
+            mediaButton = hudRoot.Q<Button>("edit-media");
+            if (mediaButton != null)
+            {
+                mediaButton.clicked += ToggleMedia;
+            }
             labelButton.clicked += ToggleLabel;
             deleteButton.clicked += interaction.DeleteSelected;
             scale.RegisterValueChangedCallback(evt => Edit(m => m.SetScaleMultiplier(evt.newValue)));
@@ -61,6 +78,22 @@ namespace Erasmus.ARToolkit
             HudView.SetShown(info, !string.IsNullOrWhiteSpace(selected.Info.Body));
             labelButton.SetEnabled(selected.HasLabel);
             HudView.SetShown(deleteButton, selected.IsPlaced);
+
+            // Objects with an info card only (parts of a design, a portal world, story characters) are
+            // read-only: their panel shows the card, nothing to scale, turn or move.
+            var editable = selected.IsManipulatable;
+            HudView.SetShown(values, editable);
+            HudView.SetShown(scale, editable);
+            HudView.SetShown(rotateRow, editable);
+            HudView.SetShown(heightRow, editable);
+            HudView.SetShown(resetButton, editable);
+
+            // Living posters and video exhibits can be paused.
+            media = selected.GetComponentInChildren<VideoSurface>(true);
+            if (mediaButton != null)
+            {
+                HudView.SetShown(mediaButton, media != null);
+            }
 
             var limits = manager.Config.ScaleLimits;
             scale.lowValue = limits.x;
@@ -87,6 +120,19 @@ namespace Erasmus.ARToolkit
             scale.SetValueWithoutNotify(scaleValue);
             scale.SetEnabled(manipulator != null);
             labelButton.text = target.IsLabelVisible ? "Hide Card" : "Show Card";
+            if (mediaButton != null && media != null)
+            {
+                mediaButton.text = media.WantsPlaying ? "Pause" : "Play";
+            }
+        }
+
+        void ToggleMedia()
+        {
+            if (media != null)
+            {
+                media.TogglePlay();
+                Refresh();
+            }
         }
 
         void Edit(System.Action<ObjectManipulator> change)

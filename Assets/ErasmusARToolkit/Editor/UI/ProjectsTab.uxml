@@ -1,0 +1,8 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" editor-extension-mode="True">
+    <ui:VisualElement class="tab">
+        <ui:HelpBox name="no-toolkit" text="The open scene has no AR Toolkit. Create the AR scene first (Scene tab)." message-type="Warning" />
+        <ui:Label class="hint" text="Each project type adds a working example to the open scene (or to the config). Open a type, set a few values and press its Add button, then change the example in the Inspector. Press Play to try it on the PC; build to try it on the phone." />
+        <ui:VisualElement name="warnings" class="issues" />
+        <ui:VisualElement name="sections" />
+    </ui:VisualElement>
+</ui:UXML>

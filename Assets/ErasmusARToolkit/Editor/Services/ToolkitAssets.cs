@@ -25,6 +25,12 @@ namespace Erasmus.ARToolkit.Editor
         const string OccluderShader = "Erasmus AR Toolkit/Occluder";
         const string SurfaceDepthShader = "Erasmus AR Toolkit/Surface Depth";
         const string ObstacleShader = "Erasmus AR Toolkit/Obstacle";
+        const string VisionShader = "Erasmus AR Toolkit/Vision Filter";
+        const string FillShader = "Erasmus AR Toolkit/Fill";
+        const string DepthClearShader = "Erasmus AR Toolkit/Depth Clear";
+
+        /// <summary>Before ordinary transparent things: info cards stay readable over the vision filter.</summary>
+        public const int VisionRenderQueue = 2900;
 
         /// <summary>How see-through the boxes around obstacles are, and how strong their edges.</summary>
         const float ObstacleFillAlpha = 0.18f;
@@ -99,11 +105,11 @@ namespace Erasmus.ARToolkit.Editor
             return theme;
         }
 
-        /// <summary>The theme exists and has the room scan materials and shaders. Only reads.</summary>
+        /// <summary>The theme exists and has the room scan and project module materials and shaders. Only reads.</summary>
         public static bool HasRoomScanAssets()
         {
             var theme = FindTheme();
-            return theme != null && theme.HasRoomScanAssets;
+            return theme != null && theme.HasRoomScanAssets && theme.HasModuleAssets;
         }
 
         /// <summary>
@@ -142,7 +148,39 @@ namespace Erasmus.ARToolkit.Editor
                 AssetDatabase.SaveAssets();
             }
 
-            return theme.HasRoomScanAssets;
+            return EnsureModuleAssets(theme) && theme.HasRoomScanAssets;
+        }
+
+        /// <summary>
+        /// Materials of the project modules (vision filter, room fill) on the theme, with their shaders, so
+        /// the shaders are part of every build. Returns false when something is still missing.
+        /// </summary>
+        public static bool EnsureModuleAssets(ToolkitTheme theme)
+        {
+            if (theme == null)
+            {
+                return false;
+            }
+
+            var visionShader = Shader.Find(VisionShader);
+            var fillShader = Shader.Find(FillShader);
+            var vision = GetOrKeepShaderMaterial(theme.VisionMaterial, visionShader, "ARToolkitVision", VisionShader,
+                VisionRenderQueue);
+            var fill = GetOrKeepShaderMaterial(theme.FillMaterial, fillShader, "ARToolkitFill", FillShader,
+                (int)RenderQueue.Transparent);
+            var depthClearShader = Shader.Find(DepthClearShader);
+            var depthClear = GetOrKeepShaderMaterial(theme.DepthClearMaterial, depthClearShader, "ARToolkitDepthClear",
+                DepthClearShader, RenderOrder.PortalMask);
+            if (theme.VisionMaterial != vision || theme.FillMaterial != fill || theme.VisionShader != visionShader
+                || theme.FillShader != fillShader || theme.DepthClearMaterial != depthClear || theme.DepthClearShader != depthClearShader)
+            {
+                theme.SetModuleAssets(vision, visionShader, fill, fillShader);
+                theme.SetPortalAssets(depthClear, depthClearShader);
+                EditorUtility.SetDirty(theme);
+                AssetDatabase.SaveAssets();
+            }
+
+            return theme.HasModuleAssets;
         }
 
         /// <summary>

@@ -7,7 +7,7 @@ namespace Erasmus.ARToolkit.Editor
     public static class ToolkitPaths
     {
         public const string DisplayName = "Erasmus AR Toolkit";
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
 
         public const string MenuRoot = "Tools/Erasmus AR Toolkit/";
         public const string OpenMenuPath = MenuRoot + "Open Toolkit";
@@ -24,6 +24,11 @@ namespace Erasmus.ARToolkit.Editor
         public const string ImageLibraryAssetPath = GeneratedFolder + "/ARToolkitImageLibrary.asset";
         public const string DefaultScenePath = ScenesFolder + "/ARScene.unity";
 
+        /// <summary>Project modules: exhibit prefabs of wall galleries, markers of school routes.</summary>
+        public const string GalleryFolder = ContentRoot + "/Gallery";
+        public const string RouteFolder = ContentRoot + "/Route";
+        public const string ModulesFolder = ContentRoot + "/Modules";
+
         public const string PrefabsFolder = ToolkitRoot + "/Prefabs";
         public const string SamplesFolder = ToolkitRoot + "/Samples";
         public const string TestsFolder = ToolkitRoot + "/Tests";
@@ -31,5 +36,9 @@ namespace Erasmus.ARToolkit.Editor
         public const string ArFoundationPackage = "com.unity.xr.arfoundation";
         public const string ArCorePackage = "com.unity.xr.arcore";
         public const string InputSystemPackage = "com.unity.inputsystem";
+
+        /// <summary>Built-in modules of the project modules: video (living posters, exhibits) and NavMesh (stories).</summary>
+        public const string VideoModule = "com.unity.modules.video";
+        public const string AiModule = "com.unity.modules.ai";
     }
 }

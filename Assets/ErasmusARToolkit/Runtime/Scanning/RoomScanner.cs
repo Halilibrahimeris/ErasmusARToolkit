@@ -150,6 +150,7 @@ namespace Erasmus.ARToolkit
         IScanSourceDiagnostics watchedSource;
         Func<bool> isTracking = () => ARSession.state == ARSessionState.SessionTracking;
         bool visible = true;
+        bool occludersEnabled = true;
         bool priorsDirty;
         bool mappingChanged;
         float nextIntegrate;
@@ -216,6 +217,58 @@ namespace Erasmus.ARToolkit
 
         /// <summary>What the scan measured last (updated with every redraw while scanning).</summary>
         public ScanDiagnostics Diagnostics => diagnostics;
+
+        /// <summary>Height (world y) of the scanned floor, or NaN while the scan has none.</summary>
+        public float FloorHeight => HasModel && model.DrawnFloor.HasValue
+            ? mapFrame.ToWorldHeight(model.DrawnFloor.Value)
+            : float.NaN;
+
+        /// <summary>
+        /// The outline of the scanned floor in world space (x and z), as closed loops (a loop inside another is a
+        /// hole). False while the scan has no floor.
+        /// </summary>
+        public bool TryGetFloorOutline(List<List<Vector2>> loops)
+        {
+            loops.Clear();
+            if (!HasModel)
+            {
+                return false;
+            }
+
+            foreach (var level in map.Levels)
+            {
+                var shape = level.IsFloor ? model.ShapeOf(level.Id) : null;
+                if (shape == null)
+                {
+                    continue;
+                }
+
+                foreach (var loop in shape.Loops)
+                {
+                    var world = new List<Vector2>(loop.Count);
+                    foreach (var point in loop)
+                    {
+                        var position = mapFrame.ToWorld(new Vector3(point.x, 0f, point.y));
+                        world.Add(new Vector2(position.x, position.z));
+                    }
+
+                    loops.Add(world);
+                }
+            }
+
+            return loops.Count > 0;
+        }
+
+        /// <summary>
+        /// Switches the scan's stand-ins for the real world on or off: the invisible table occluders and the
+        /// depth corrections of scanned surfaces. Off while the camera picture is hidden (a virtual view, the
+        /// inside of a portal): real tables must not cut virtual content then.
+        /// </summary>
+        public void SetOccludersEnabled(bool value)
+        {
+            occludersEnabled = value;
+            view?.SetRealWorldParts(value);
+        }
 
         internal RoomSurfaceMap Map => map;
 
@@ -648,7 +701,7 @@ namespace Erasmus.ARToolkit
         /// </summary>
         internal bool Adopt(ToolkitObject target)
         {
-            if (target == null || !HasModel || !target.IsPlaced)
+            if (target == null || !HasModel || !target.IsPlaced || target.IsOnWall)
             {
                 return false;
             }
@@ -1213,6 +1266,7 @@ namespace Erasmus.ARToolkit
 
                 view.SetGridCellSize(gridCellSize);
                 view.SetVisible(visible);
+                view.SetRealWorldParts(occludersEnabled);
                 view.SetGridFrame(mapFrame.Root, model.RoomYaw);
             }
 

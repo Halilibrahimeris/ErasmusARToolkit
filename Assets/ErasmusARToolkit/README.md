@@ -195,6 +195,69 @@ Your content folder `Assets/ARToolkitContent` is never overwritten when you upda
 
 ---
 
+## Project modules
+
+The **Projects** tab builds ready-made projects in the open scene. Each project type is one section:
+fill in a few fields, press **Add**, and a working example appears in the scene. Change it in the
+Inspector, press Play to try it on the PC, then build for the phone. The list under each section shows
+what is already in the scene, with **Select** and **Remove**.
+
+Nothing is added to a scene by itself. A module you never add changes nothing, and modules work
+together in one scene, so a team can mix them into a project of its own. Ready scenes to open and
+play are in `Samples/Scenes/Modules` (Design with the vision simulator, Room Fill, Portal, Story).
+
+| Section | What it builds | Try it on the PC |
+|---|---|---|
+| Design Walkthrough | A designed space (classroom, garden, museum) that stands around the user. **View: AR / Virtual** hides the real room; hold the button to peek at it | WASD walks from the Start Camera, right-drag looks around |
+| Living Poster | An image target that plays a video or a sound on the printed poster | Image target simulation shows the poster on the ground |
+| Wall Gallery | A framed picture or video (a prefab in `ARToolkitContent/Gallery`) that is hung on walls | A virtual wall stands in front of the start view |
+| School Route | Numbered image targets. Each found stop shows an arrow and "Next: ..."; the HUD counts the stops | Simulated stops count when they come into view |
+| See Through Other Eyes | A **Vision** button: colour blindness, low vision, tunnel vision, cataract. With a Design, an **Eye** button shows it from a wheelchair or a child's eye height | Same buttons in the HUD |
+| Room Fill | Water, smoke or objects that rise in the room to a level, with **Start / Pause** and a slider | The fill covers a rectangle on the virtual ground |
+| Portal | A door to another world. Walk through it to be inside; the room shows through the door behind you | WASD walks through the door |
+| NPC Story | Characters that say lines, walk to points, turn to the user and wait for a tap or for the user to come close | Click to go on, WASD to come close |
+| Info Cards | A card (title and text) on any object; tapping it opens a read-only panel | Click the object |
+
+### Placing a module
+
+Every module root has a **Module Placement** component:
+
+- **At App Start:** the module appears where the app starts. The root's position in the scene is where
+  the phone is at start (for a Design, its Start Camera is). It sits on the floor as soon as the floor
+  is found.
+- **Tap To Place:** the HUD asks the user to tap the floor. A **Move** button places it again.
+
+On the phone a module follows an AR anchor, so it stays put while the user walks. After a **Room scan**
+modules use the scanned floor; Room Fill covers the scanned floor, and NPCs walk around the scanned
+furniture and walls.
+
+### Editing the examples
+
+- **Design:** put your models under the Design root. Objects under **Virtual Only** are shown only in
+  the Virtual view (walls and floor of the designed room). Add Info Cards to single objects, not to a
+  group root (the card's collider would cover the children).
+- **Room Fill:** the level, time, colour and the object prefab are on the **Room Fill** component. Up to
+  1500 objects are drawn with GPU instancing, from the first mesh and material of the object prefab.
+- **Portal:** replace the example **Inside World** with your own prefab; keep its content inside the
+  portal's **World Size** (the blue box shown when the portal is selected).
+- **Story:** the steps are a list on the **Story Stage** component. Each step has a character, an action
+  (Say, Walk To, Turn To User, Play Animation, Wait, Show, Hide) and when it goes on (Auto, Tap, User
+  Near). **Add NPC To Story** and **Add Point To Story** add to the selected story. A character model
+  with an Animator gets its `Speed` (float) and `Talk` (bool) parameters.
+
+### Limits of the modules
+
+- Videos must be H.264 MP4 files to play on Android.
+- The vision filters read the URP opaque texture. The camera makes it only while a filter is on, and
+  **Run Setup** keeps it at full resolution. Transparent effects (Room Fill water and smoke) and info
+  cards are not filtered.
+- The Virtual view and the Portal pause the real-world occlusion while they need to; a running room
+  scan keeps it on.
+- Characters walk on a NavMesh the story builds at run time: the scanned floor, else a square of
+  **Area Size** around the story. Without a scan they do not know the real furniture.
+
+---
+
 ## Customizing the look
 
 - **HUD (UI Toolkit):** `UI/ARToolkitHUD.uxml` (layout) and `UI/ARToolkitHUD.uss` (styles).

@@ -23,6 +23,12 @@ MonoBehaviour:
   occluderShader: {fileID: 4800000, guid: 0fe114d1ad5fda449b0a99cfaa83cbcc, type: 3}
   surfaceDepthShader: {fileID: 4800000, guid: 33b60bb0a13ec8c4c901e4e6256504fd, type: 3}
   obstacleShader: {fileID: 4800000, guid: 3f74df9e5b33edd4e929323b6932730f, type: 3}
+  visionMaterial: {fileID: 2100000, guid: d678fa64b470b0241aa6ab4933373751, type: 2}
+  fillMaterial: {fileID: 2100000, guid: 6188f9690af4f1542a29259cf184ff34, type: 2}
+  visionShader: {fileID: 4800000, guid: f7a3026b310114b489e7d82e0c601f37, type: 3}
+  fillShader: {fileID: 4800000, guid: c4182fce32227584fbc8112ce8c60fa4, type: 3}
+  depthClearMaterial: {fileID: 2100000, guid: 1d12d0c8aeb46bd43855b4424697fd4a, type: 2}
+  depthClearShader: {fileID: 4800000, guid: 2541925a2bcdff447a020b85ee1ce718, type: 3}
   labelFont: {fileID: 0}
   labelTitleColor: {r: 1, g: 0.8, b: 0, a: 1}
   labelTextColor: {r: 1, g: 1, b: 1, a: 1}

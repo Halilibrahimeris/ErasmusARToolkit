@@ -17,7 +17,9 @@
     "autoReferenced": false,
     "defineConstraints": [
         "ERASMUS_HAS_ARF",
-        "ERASMUS_HAS_INPUTSYSTEM"
+        "ERASMUS_HAS_INPUTSYSTEM",
+        "ERASMUS_HAS_VIDEO",
+        "ERASMUS_HAS_AI"
     ],
     "versionDefines": [
         {
@@ -29,6 +31,16 @@
             "name": "com.unity.inputsystem",
             "expression": "1.7",
             "define": "ERASMUS_HAS_INPUTSYSTEM"
+        },
+        {
+            "name": "com.unity.modules.video",
+            "expression": "1.0.0",
+            "define": "ERASMUS_HAS_VIDEO"
+        },
+        {
+            "name": "com.unity.modules.ai",
+            "expression": "1.0.0",
+            "define": "ERASMUS_HAS_AI"
         }
     ],
     "noEngineReferences": false

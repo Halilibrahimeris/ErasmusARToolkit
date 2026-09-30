@@ -21,6 +21,7 @@ MonoBehaviour:
       title: Erasmus Box
       body: A simple 15 cm cube. Drag it, pinch to scale, twist to rotate.
       showOnStart: 0
+    placeOn: 0
   - displayName: Globe
     prefab: {fileID: 8819862260122303053, guid: 87099d44806a7054d87e1e9628f92d32, type: 3}
     icon: {fileID: 0}
@@ -29,6 +30,7 @@ MonoBehaviour:
       title: Globe
       body: Erasmus+ connects students and teachers all over Europe.
       showOnStart: 0
+    placeOn: 0
   - displayName: EU Flag
     prefab: {fileID: 5316932698288312756, guid: ef6544268537c1145bbd2fb34b79f5ca, type: 3}
     icon: {fileID: 0}
@@ -37,6 +39,7 @@ MonoBehaviour:
       title: EU Flag
       body: Twelve golden stars on a blue background.
       showOnStart: 0
+    placeOn: 0
   imageTargets:
   - name: SampleMarker
     texture: {fileID: 2800000, guid: f2b829c5791c887408db07c136f902be, type: 3}
@@ -46,11 +49,24 @@ MonoBehaviour:
       title: Image Target
       body: This globe appears when the camera sees the printed sample marker.
       showOnStart: 1
+    media:
+      video: {fileID: 0}
+      audio: {fileID: 0}
+      loop: 1
+      volume: 1
+    routeStop:
+      order: 0
+      nextHint: 
+      arrow: 0
   imageLibrary: {fileID: 11400000, guid: e42d70b28092f8247b2668c9b9339c05, type: 2}
   maxPlacedObjects: 10
   scaleLimits: {x: 0.2, y: 5}
   showPlanesOnStart: 1
+  realWorldOcclusion: 1
   modeOverride: 0
+  showScanDiagnostics: 0
+  gridCellSize: 0.25
+  detectWalls: 1
   useDeviceCamera: 1
   preferredCameraName: 
   desktopSimulateImageTargets: 1

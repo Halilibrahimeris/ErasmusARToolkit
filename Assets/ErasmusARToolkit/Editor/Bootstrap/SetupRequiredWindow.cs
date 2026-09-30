@@ -21,7 +21,7 @@ namespace Erasmus.ARToolkit.Editor
             window.minSize = new Vector2(420, 240);
         }
 
-#if !(ERASMUS_HAS_ARF && ERASMUS_HAS_INPUTSYSTEM)
+#if !(ERASMUS_HAS_ARF && ERASMUS_HAS_INPUTSYSTEM && ERASMUS_HAS_VIDEO && ERASMUS_HAS_AI)
         [MenuItem(ToolkitPaths.OpenMenuPath, priority = 0)]
         static void OpenFromMenu()
         {

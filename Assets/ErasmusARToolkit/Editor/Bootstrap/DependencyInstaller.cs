@@ -20,13 +20,16 @@ namespace Erasmus.ARToolkit.Editor
 
         /// <summary>
         /// ARCore pulls in AR Foundation, XR Management and XR Core Utils as dependencies.
-        /// Names without versions let Unity pick the version verified for this editor.
+        /// Names without versions let Unity pick the version verified for this editor. The video and AI
+        /// modules are built into Unity; some project templates switch them off.
         /// </summary>
         static readonly string[] RequiredPackages =
         {
             ToolkitPaths.ArCorePackage,
             ToolkitPaths.ArFoundationPackage,
             ToolkitPaths.InputSystemPackage,
+            ToolkitPaths.VideoModule,
+            ToolkitPaths.AiModule,
         };
 
         static AddAndRemoveRequest activeRequest;

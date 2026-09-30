@@ -13,11 +13,18 @@ namespace Erasmus.ARToolkit
         const float Spacing = 0.15f;
         const float RowDistance = 0.6f;
         const float HeightAboveGround = 0.001f;
+        const float SeenCheckSeconds = 0.5f;
+
+        /// <summary>A simulated image is "found" when it is in view and not further away than this.</summary>
+        const float SeenDistance = 4f;
 
         [SerializeField] ARToolkitManager manager;
 
         readonly List<Material> createdMaterials = new List<Material>();
+        readonly List<SimulatedImage> simulated = new List<SimulatedImage>();
+        readonly Plane[] frustum = new Plane[6];
         Transform floorTargets;
+        float nextSeenCheck;
         WebcamImageTracking liveTracking;
 
         /// <summary>True while images are recognised in the webcam picture instead of simulated.</summary>
@@ -66,6 +73,56 @@ namespace Erasmus.ARToolkit
             }
 
             createdMaterials.Clear();
+        }
+
+        void Update()
+        {
+            if (simulated.Count == 0 || Time.unscaledTime < nextSeenCheck || manager == null || manager.ActiveCamera == null)
+            {
+                return;
+            }
+
+            nextSeenCheck = Time.unscaledTime + SeenCheckSeconds;
+            var viewCamera = manager.ActiveCamera;
+            GeometryUtility.CalculateFrustumPlanes(viewCamera, frustum);
+            var active = floorTargets != null && floorTargets.gameObject.activeInHierarchy;
+            foreach (var image in simulated)
+            {
+                var seen = active && image.Content != null
+                           && Vector3.Distance(viewCamera.transform.position, image.Bounds.center) <= SeenDistance
+                           && GeometryUtility.TestPlanesAABB(frustum, image.Bounds);
+                if (seen && !image.IsSeen)
+                {
+                    ImageTargetEvents.RaiseFound(image.Item, image.Content);
+                }
+
+                image.IsSeen = seen;
+            }
+        }
+
+        /// <summary>The images lie on the virtual ground now (not while the webcam picture is searched for them).</summary>
+        internal bool ShowsFloorImages => floorTargets != null && floorTargets.gameObject.activeInHierarchy;
+
+        /// <summary>The simulated image is in view now (it was "found").</summary>
+        internal bool IsSeen(string imageName)
+        {
+            foreach (var image in simulated)
+            {
+                if (image.Item.ResolvedName == imageName)
+                {
+                    return image.IsSeen;
+                }
+            }
+
+            return false;
+        }
+
+        sealed class SimulatedImage
+        {
+            public ImageTargetItem Item;
+            public ToolkitObject Content;
+            public Bounds Bounds;
+            public bool IsSeen;
         }
 
         /// <summary>Floor copies are hidden while the real images are recognised in the webcam picture.</summary>
@@ -130,7 +187,13 @@ namespace Erasmus.ARToolkit
                 quad.GetComponent<MeshRenderer>().sharedMaterial = material;
             }
 
-            ToolkitObjectFactory.SpawnImageContent(target, anchor, size, manager.Theme, manager.Config.ScaleLimits);
+            var content = ToolkitObjectFactory.SpawnImageContent(target, anchor, size, manager.Theme, manager.Config.ScaleLimits);
+            simulated.Add(new SimulatedImage
+            {
+                Item = target,
+                Content = content,
+                Bounds = new Bounds(anchor.position, new Vector3(size.x, 0.02f, size.y)),
+            });
         }
     }
 }

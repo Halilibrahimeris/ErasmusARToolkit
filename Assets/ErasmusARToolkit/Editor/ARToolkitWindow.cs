@@ -39,6 +39,7 @@ namespace Erasmus.ARToolkit.Editor
                 new SetupTab(),
                 new SceneTab(),
                 new ContentTab(),
+                new ProjectsTab(),
                 new BuildTab(),
                 new ExportTab(),
             };

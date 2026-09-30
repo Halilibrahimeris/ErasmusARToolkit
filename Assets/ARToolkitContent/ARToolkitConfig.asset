@@ -21,6 +21,7 @@ MonoBehaviour:
       title: Coin
       body: Test
       showOnStart: 0
+    placeOn: 0
   imageTargets:
   - name: Gemi Test
     texture: {fileID: 2800000, guid: ce58f71cc332c2043ba54e5fda24a37f, type: 3}
@@ -30,19 +31,41 @@ MonoBehaviour:
       title: Test
       body: Test
       showOnStart: 0
+    media:
+      video: {fileID: 0}
+      audio: {fileID: 0}
+      loop: 1
+      volume: 1
+    routeStop:
+      order: 0
+      nextHint: 
+      arrow: 0
   - name: logo
-    texture: {fileID: 2800000, guid: ef133baac7b194c41987f9af97faa6f2, type: 3}
+    texture: {fileID: 2800000, guid: 496fffdea73f0e6469b2d3598e30b0cf, type: 3}
     widthMeters: 0.21
     prefab: {fileID: 919132149155446097, guid: a59547279653a014c802f525afd7fc3c, type: 3}
     info:
       title: Our Erasmus Logo
       body: Welcome our erasmus project
       showOnStart: 0
+    media:
+      video: {fileID: 0}
+      audio: {fileID: 0}
+      loop: 1
+      volume: 1
+    routeStop:
+      order: 0
+      nextHint: 
+      arrow: 0
   imageLibrary: {fileID: 11400000, guid: a79d6618d277b2d45b2ad0c250cd31e7, type: 2}
   maxPlacedObjects: 10
   scaleLimits: {x: 0.2, y: 5}
   showPlanesOnStart: 1
+  realWorldOcclusion: 1
   modeOverride: 0
+  showScanDiagnostics: 0
+  gridCellSize: 0.25
+  detectWalls: 1
   useDeviceCamera: 1
   preferredCameraName: A4ech FHD 1080P PC Camera
   desktopSimulateImageTargets: 1

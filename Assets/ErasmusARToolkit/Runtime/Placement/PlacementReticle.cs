@@ -71,6 +71,20 @@ namespace Erasmus.ARToolkit
             }
 
             var center = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            var interaction = manager.Interaction;
+            var item = interaction != null ? interaction.SelectedPlaceable : null;
+            if (item != null && item.PlaceOn == PlaceOn.Wall)
+            {
+                // Pictures go on walls: the ring lies on the wall.
+                if (manager.ActiveSurface is IWallPlacementSurface walls && walls.TryGetWallPose(center, out var wall))
+                {
+                    pose = new Pose(wall.position, wall.rotation * Quaternion.Euler(90f, 0f, 0f));
+                    return true;
+                }
+
+                return false;
+            }
+
             return manager.ActiveSurface.TryGetPose(center, out pose);
         }
     }

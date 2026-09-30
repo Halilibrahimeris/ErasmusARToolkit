@@ -110,15 +110,38 @@ namespace Erasmus.ARToolkit
                                          "Enter the real printed width (A4 is about 0.21 m).");
                 }
 
-                if (item.Prefab == null && !item.Info.HasContent)
+                if (item.Prefab == null && !item.Info.HasContent && !item.Media.HasAny)
                 {
-                    yield return Error($"{label} '{item.ResolvedName}' needs a prefab or an info label.");
+                    yield return Error($"{label} '{item.ResolvedName}' needs a prefab, an info label, a video or a sound.");
                 }
             }
 
             foreach (var name in FindDuplicates(targets.Where(t => t != null && t.Texture != null).Select(t => t.ResolvedName)))
             {
                 yield return Error($"More than one image target is called '{name}'. Names must be unique.");
+            }
+
+            foreach (var issue in ValidateRoute(targets))
+            {
+                yield return issue;
+            }
+        }
+
+        static IEnumerable<ConfigIssue> ValidateRoute(IReadOnlyList<ImageTargetItem> targets)
+        {
+            var stops = targets.Where(t => t != null && t.RouteStop.IsStop).OrderBy(t => t.RouteStop.Order).ToList();
+            foreach (var number in stops.GroupBy(t => t.RouteStop.Order).Where(g => g.Count() > 1).Select(g => g.Key))
+            {
+                yield return Error($"More than one route stop has the number {number}. Give every stop its own number.");
+            }
+
+            for (var i = 0; i < stops.Count - 1; i++)
+            {
+                if (!stops[i].RouteStop.HasDirections)
+                {
+                    yield return Warning($"Route stop {stops[i].RouteStop.Order} '{stops[i].ResolvedName}' does not say " +
+                                         "how to get to the next stop (Next Hint or Arrow).");
+                }
             }
         }
 

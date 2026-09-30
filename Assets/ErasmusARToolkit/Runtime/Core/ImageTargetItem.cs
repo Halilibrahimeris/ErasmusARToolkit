@@ -16,19 +16,25 @@ namespace Erasmus.ARToolkit
         [SerializeField, Tooltip("Content shown on top of the image. Optional if an info label is set.")]
         GameObject prefab;
         [SerializeField] InfoLabelData info = new InfoLabelData();
+        [SerializeField, Tooltip("Living poster: a video on the image and/or a sound, played while the image is seen.")]
+        PosterMedia media = new PosterMedia();
+        [SerializeField, Tooltip("School route: the number of this stop and the way to the next one.")]
+        RouteStop routeStop = new RouteStop();
 
         public ImageTargetItem()
         {
         }
 
         public ImageTargetItem(string name, Texture2D texture, float widthMeters, GameObject prefab,
-            InfoLabelData info = null)
+            InfoLabelData info = null, PosterMedia media = null, RouteStop routeStop = null)
         {
             this.name = name ?? string.Empty;
             this.texture = texture;
             this.widthMeters = widthMeters;
             this.prefab = prefab;
             this.info = info ?? new InfoLabelData();
+            this.media = media ?? new PosterMedia();
+            this.routeStop = routeStop ?? new RouteStop();
         }
 
         public string Name => name ?? string.Empty;
@@ -36,6 +42,22 @@ namespace Erasmus.ARToolkit
         public float WidthMeters => widthMeters;
         public GameObject Prefab => prefab;
         public InfoLabelData Info => info ?? new InfoLabelData();
+
+        /// <summary>Video and sound of a living poster (empty for other images).</summary>
+        public PosterMedia Media => media ?? new PosterMedia();
+
+        internal void SetMedia(PosterMedia value)
+        {
+            media = value ?? new PosterMedia();
+        }
+
+        /// <summary>The route stop of this image (order 0: not a stop).</summary>
+        public RouteStop RouteStop => routeStop ?? new RouteStop();
+
+        internal void SetRouteStop(RouteStop value)
+        {
+            routeStop = value ?? new RouteStop();
+        }
 
         /// <summary>The name used in the reference image library.</summary>
         public string ResolvedName

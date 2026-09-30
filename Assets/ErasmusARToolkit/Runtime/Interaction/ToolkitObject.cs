@@ -13,6 +13,7 @@ namespace Erasmus.ARToolkit
         SelectionIndicator indicator;
         GameObject anchorHolder;
         SurfaceHolder surfaceHolder;
+        bool labelWanted;
 
         public string DisplayName { get; private set; } = string.Empty;
         public InfoLabelData Info { get; private set; } = new InfoLabelData();
@@ -22,6 +23,23 @@ namespace Erasmus.ARToolkit
 
         /// <summary>True for objects the user placed (they can be deleted); false for image target content.</summary>
         public bool IsPlaced { get; private set; }
+
+        /// <summary>The object hangs on a wall: it moves along walls and turns around the wall's normal.</summary>
+        public bool IsOnWall { get; private set; }
+
+        /// <summary>The pose of the wall it hangs on (forward = out of the wall).</summary>
+        internal Quaternion WallRotation { get; private set; } = Quaternion.identity;
+
+        /// <summary>Marks the object as hanging on a wall with this rotation.</summary>
+        internal void SetOnWall(Quaternion wallRotation)
+        {
+            IsOnWall = true;
+            WallRotation = wallRotation;
+            if (manipulator != null)
+            {
+                manipulator.OnWall = true;
+            }
+        }
 
         /// <summary>The object stands on a scanned surface and follows it (see <see cref="SurfaceHolder"/>).</summary>
         public bool HasSurface => surfaceHolder != null && surfaceHolder.HasSurface;
@@ -35,6 +53,12 @@ namespace Erasmus.ARToolkit
         public bool HasLabel => label != null;
         public bool IsLabelVisible => label != null && label.IsVisible;
 
+        /// <summary>
+        /// The card opens when the object is selected and closes when it is not (objects with an
+        /// <see cref="InfoCard"/>). Cards set to show on start stay open.
+        /// </summary>
+        internal bool ShowsLabelOnSelect { get; set; }
+
         internal void Initialize(string displayName, InfoLabelData info, ObjectManipulator objectManipulator,
             InfoLabel infoLabel, SelectionIndicator selectionIndicator, bool isPlaced)
         {
@@ -44,6 +68,11 @@ namespace Erasmus.ARToolkit
             label = infoLabel;
             indicator = selectionIndicator;
             IsPlaced = isPlaced;
+            labelWanted = label != null && label.IsVisible;
+            if (label != null && !IsShown)
+            {
+                label.SetVisible(false);
+            }
         }
 
         /// <summary>The AR anchor this object hangs from; it is removed together with the object.</summary>
@@ -118,13 +147,42 @@ namespace Erasmus.ARToolkit
             {
                 indicator.SetVisible(selected);
             }
+
+            if (ShowsLabelOnSelect && label != null)
+            {
+                SetLabelVisible(selected || Info.ShowOnStart);
+            }
         }
 
         public void SetLabelVisible(bool visible)
         {
+            labelWanted = visible;
             if (label != null)
             {
-                label.SetVisible(visible);
+                label.SetVisible(visible && IsShown);
+            }
+        }
+
+        /// <summary>The object is switched on (works in Edit Mode too, unlike isActiveAndEnabled).</summary>
+        bool IsShown => enabled && gameObject.activeInHierarchy;
+
+        /// <summary>
+        /// The card is an object of its own (it must not take the object's scale), so it is hidden and
+        /// shown with the object: image content that lost its image, a part of a design that is switched off.
+        /// </summary>
+        void OnEnable()
+        {
+            if (label != null && labelWanted)
+            {
+                label.SetVisible(true);
+            }
+        }
+
+        void OnDisable()
+        {
+            if (label != null)
+            {
+                label.SetVisible(false);
             }
         }
 

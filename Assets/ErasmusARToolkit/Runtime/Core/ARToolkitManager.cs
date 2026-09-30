@@ -47,6 +47,8 @@ namespace Erasmus.ARToolkit
         ARPlaneSurfaces planeSurfaces;
         RoomScanner roomScanner;
         AROcclusionManager occlusionManager;
+        ARToolkitHUD hud;
+        InteractionController interaction;
         ContactDepthView contactDepth;
         bool contactDepthDirty;
         float nextStatusRefresh;
@@ -78,6 +80,51 @@ namespace Erasmus.ARToolkit
 
         /// <summary>Room scan mode of the AR rig (null if the scene has no AR rig).</summary>
         public RoomScanner RoomScanner => roomScanner;
+
+        /// <summary>The on-screen controls (null in scenes without a HUD). Project modules add their buttons here.</summary>
+        public ARToolkitHUD Hud
+        {
+            get
+            {
+                if (hud == null)
+                {
+                    hud = GetComponentInChildren<ARToolkitHUD>(true);
+                }
+
+                return hud;
+            }
+        }
+
+        /// <summary>Turns touches and clicks into toolkit actions (null in scenes without one).</summary>
+        public InteractionController Interaction
+        {
+            get
+            {
+                if (interaction == null)
+                {
+                    interaction = GetComponent<InteractionController>();
+                }
+
+                return interaction;
+            }
+        }
+
+        /// <summary>Hides the camera picture behind a sky color and shows it again (virtual views, portals).</summary>
+        public CameraImageSwitch CameraImage { get; private set; }
+
+        internal ARPlaneManager PlaneManager => planeManager;
+
+        internal VirtualGround DesktopGround => desktopGround;
+
+        internal Camera DesktopCamera => desktopCamera;
+
+        internal AROcclusionManager OcclusionManager => occlusionManager;
+
+        /// <summary>Called by the HUD when it wakes up.</summary>
+        internal void RegisterHud(ARToolkitHUD value)
+        {
+            hud = value;
+        }
 
         bool IsCameraFeedActive => Mode == ToolkitMode.Desktop && cameraFeed != null && cameraFeed.IsRunning;
 
@@ -160,6 +207,7 @@ namespace Erasmus.ARToolkit
             occlusionManager = RealWorldOcclusion.Configure(arCamera != null ? arCamera.gameObject : null,
                 config.RealWorldOcclusion);
             EnsureRoomScanner();
+            CameraImage = new CameraImageSwitch(this);
 
             // Both rigs start off; Start() turns on the one that matches the platform.
             SetActive(arSessionObject, false);
@@ -256,8 +304,8 @@ namespace Erasmus.ARToolkit
             planeSurfaces.SetVisible(PlanesVisible);
             planeSurfaces.SetGridCellSize(config.GridCellSize);
 
-            // Vertical planes are the walls of the room scan. Objects are placed on horizontal ones only.
-            planeManager.requestedDetectionMode = config.DetectWalls
+            // Vertical planes are the walls of the room scan, and walls for pictures (wall gallery).
+            planeManager.requestedDetectionMode = config.DetectWalls || config.HasWallPlaceables
                 ? PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical
                 : PlaneDetectionMode.Horizontal;
         }
@@ -332,7 +380,8 @@ namespace Erasmus.ARToolkit
 
         bool IsCoveredByScan(ToolkitObject placed)
         {
-            return roomScanner != null && roomScanner.CoversWithDepth(placed);
+            // Pictures on walls stand on no floor: they get no depth patch under them.
+            return placed.IsOnWall || (roomScanner != null && roomScanner.CoversWithDepth(placed));
         }
 
         void OnScanningChanged(bool isScanning)
@@ -493,6 +542,11 @@ namespace Erasmus.ARToolkit
                 desktopGround.SetVisible(visible);
             }
 
+            if (desktopSurface != null && desktopSurface.Wall != null)
+            {
+                desktopSurface.Wall.SetVisible(visible);
+            }
+
             if (planeSurfaces != null)
             {
                 planeSurfaces.SetVisible(visible);
@@ -536,16 +590,38 @@ namespace Erasmus.ARToolkit
                 return anchorHolder.transform;
             }
 
+            anchorHolder = CreateAnchor(pose);
+            return anchorHolder.transform;
+        }
+
+        /// <summary>
+        /// Parent for an object that hangs on a wall: an AR anchor at the pose in AR mode (never a point of
+        /// the scanned floor), else the placed-objects root.
+        /// </summary>
+        public Transform CreateWallPlacementParent(Pose pose, out GameObject anchorHolder)
+        {
+            anchorHolder = null;
+            if (Mode != ToolkitMode.AR || arOriginObject == null)
+            {
+                return placedObjectsRoot;
+            }
+
+            anchorHolder = CreateAnchor(pose);
+            return anchorHolder.transform;
+        }
+
+        GameObject CreateAnchor(Pose pose)
+        {
             var origin = arOriginObject.GetComponent<XROrigin>();
             var trackables = origin != null && origin.TrackablesParent != null
                 ? origin.TrackablesParent
                 : arOriginObject.transform;
 
-            anchorHolder = new GameObject("Anchor");
-            anchorHolder.transform.SetPositionAndRotation(pose.position, pose.rotation);
-            anchorHolder.transform.SetParent(trackables, true);
-            anchorHolder.AddComponent<ARAnchor>();
-            return anchorHolder.transform;
+            var anchor = new GameObject("Anchor");
+            anchor.transform.SetPositionAndRotation(pose.position, pose.rotation);
+            anchor.transform.SetParent(trackables, true);
+            anchor.AddComponent<ARAnchor>();
+            return anchor;
         }
 
         void ApplyMode(ToolkitMode mode)
@@ -569,6 +645,13 @@ namespace Erasmus.ARToolkit
             if (desktopGround != null)
             {
                 desktopGround.SetVisible(PlanesVisible);
+            }
+
+            if (!isAR && config.HasWallPlaceables && desktopSurface != null && desktopSurface.Wall == null)
+            {
+                desktopSurface.SetWall(VirtualWall.Create(desktopRigObject != null ? desktopRigObject.transform : transform,
+                    theme, desktopGround != null ? desktopGround.Height : 0f));
+                desktopSurface.Wall.SetVisible(PlanesVisible);
             }
 
             Debug.Log($"[Erasmus AR Toolkit] Running in {mode} mode{(IsFallback ? " (AR not supported on this device)" : string.Empty)}.");

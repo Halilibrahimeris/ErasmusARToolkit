@@ -36,6 +36,20 @@ namespace Erasmus.ARToolkit
         [SerializeField, Tooltip("Referenced here so the room scan shaders are part of every build.")]
         Shader obstacleShader;
 
+        [Header("Project Modules")]
+        [SerializeField, Tooltip("Full-screen filter of the vision simulator (colour blindness, low vision ...).")]
+        Material visionMaterial;
+        [SerializeField, Tooltip("Water and smoke of the room fill.")]
+        Material fillMaterial;
+        [SerializeField, Tooltip("Referenced here so the module shaders are part of every build.")]
+        Shader visionShader;
+        [SerializeField, Tooltip("Referenced here so the module shaders are part of every build.")]
+        Shader fillShader;
+        [SerializeField, Tooltip("Doorway of a portal: forgets the real depth so the world behind the door shows.")]
+        Material depthClearMaterial;
+        [SerializeField, Tooltip("Referenced here so the module shaders are part of every build.")]
+        Shader depthClearShader;
+
         [Header("Info Labels")]
         [SerializeField, Tooltip("TextMeshPro font for info labels. Empty uses the TMP default font.")]
         TMP_FontAsset labelFont;
@@ -58,6 +72,12 @@ namespace Erasmus.ARToolkit
         public Material ObstacleMaterial => obstacleMaterial;
         public Material ObstacleEdgeMaterial => obstacleEdgeMaterial;
         public Shader ObstacleShader => obstacleShader;
+        public Material VisionMaterial => visionMaterial;
+        public Material FillMaterial => fillMaterial;
+        public Shader VisionShader => visionShader;
+        public Shader FillShader => fillShader;
+        public Material DepthClearMaterial => depthClearMaterial;
+        public Shader DepthClearShader => depthClearShader;
         public TMP_FontAsset LabelFont => labelFont;
         public Color LabelTitleColor => labelTitleColor;
         public Color LabelTextColor => labelTextColor;
@@ -77,6 +97,25 @@ namespace Erasmus.ARToolkit
             occluderMaterial != null && surfaceDepthMaterial != null
             && occluderShader != null && surfaceDepthShader != null
             && obstacleMaterial != null && obstacleEdgeMaterial != null && obstacleShader != null;
+
+        /// <summary>The materials and shaders of the project modules are assigned (Run Setup adds them).</summary>
+        public bool HasModuleAssets =>
+            visionMaterial != null && fillMaterial != null && visionShader != null && fillShader != null
+            && depthClearMaterial != null && depthClearShader != null;
+
+        internal void SetPortalAssets(Material depthClear, Shader shader)
+        {
+            depthClearMaterial = depthClear;
+            depthClearShader = shader;
+        }
+
+        internal void SetModuleAssets(Material vision, Shader visionFilter, Material fill, Shader fillSurface)
+        {
+            visionMaterial = vision;
+            visionShader = visionFilter;
+            fillMaterial = fill;
+            fillShader = fillSurface;
+        }
 
         internal void SetMaterials(Material ground, Material highlight, Material imageTarget, Material labelBackground)
         {
