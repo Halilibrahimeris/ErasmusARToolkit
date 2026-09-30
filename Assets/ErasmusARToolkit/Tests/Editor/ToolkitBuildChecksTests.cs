@@ -45,6 +45,9 @@ namespace Erasmus.ARToolkit.Tests
                 Assert.IsFalse(theme.HasRoomScanAssets, "Materials alone are not enough: the shaders are referenced too.");
 
                 theme.SetRoomScanShaders(shader, shader);
+                Assert.IsFalse(theme.HasRoomScanAssets, "The boxes around obstacles need their materials, too.");
+
+                theme.SetObstacleAssets(material, material, shader);
                 Assert.IsTrue(theme.HasRoomScanAssets);
             }
             finally

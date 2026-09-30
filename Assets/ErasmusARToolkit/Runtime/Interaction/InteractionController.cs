@@ -167,14 +167,28 @@ namespace Erasmus.ARToolkit
         /// </summary>
         bool TryGetSurface(Vector2 position, out Pose pose, out int levelId)
         {
+            // (The other overload tells why a spot is refused.)
+            return TryGetSurface(position, out pose, out levelId, out _);
+        }
+
+        /// <param name="refusal">Why nothing can be placed at that spot, when something is in the way; else null.</param>
+        bool TryGetSurface(Vector2 position, out Pose pose, out int levelId, out string refusal)
+        {
             levelId = -1;
+            refusal = null;
             var scanner = manager.Mode == ToolkitMode.AR ? manager.RoomScanner : null;
             if (scanner != null && scanner.HasModel)
             {
-                var found = scanner.TryGetHit(position, out var hit) && !hit.Blocked;
+                var found = scanner.TryGetHit(position, out var hit);
+                var blocked = found && hit.Blocked;
+                if (blocked)
+                {
+                    refusal = hit.BehindWall ? RoomScanText.WallThere : RoomScanText.ObstacleThere;
+                }
+
                 pose = hit.Pose;
-                levelId = found ? hit.LevelId : -1;
-                return found;
+                levelId = found && !blocked ? hit.LevelId : -1;
+                return found && !blocked;
             }
 
             return manager.ActiveSurface.TryGetPose(position, out pose);
@@ -300,9 +314,9 @@ namespace Erasmus.ARToolkit
                 return;
             }
 
-            if (!TryGetSurface(position, out var pose, out var levelId))
+            if (!TryGetSurface(position, out var pose, out var levelId, out string refusal))
             {
-                Notify(NoSurfaceMessage());
+                Notify(refusal ?? NoSurfaceMessage());
                 return;
             }
 

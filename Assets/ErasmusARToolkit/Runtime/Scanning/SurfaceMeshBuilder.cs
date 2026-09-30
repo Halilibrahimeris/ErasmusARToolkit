@@ -77,7 +77,7 @@ namespace Erasmus.ARToolkit
     /// </list>
     /// Buffers are reused, so keep one builder and call <see cref="Build"/> for every surface.
     /// </summary>
-    public sealed class SurfaceMeshBuilder
+    public sealed partial class SurfaceMeshBuilder
     {
         public const float OutlineWidth = 0.01f;
 
@@ -408,7 +408,9 @@ namespace Erasmus.ARToolkit
 
             for (var i = 0; i < count; i++)
             {
-                field[i] = FieldValue(grid, i);
+                // Smoothed, every cell counts the same: strong evidence on one side of an edge would
+                // keep single cells standing out of it.
+                field[i] = SmoothEdges ? (grid.IsShown(i) ? 1f : -1f) : FieldValue(grid, i);
             }
 
             if (!SmoothEdges)

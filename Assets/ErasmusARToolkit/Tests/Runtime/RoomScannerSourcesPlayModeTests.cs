@@ -232,6 +232,56 @@ namespace Erasmus.ARToolkit.Tests
             CollectionAssert.Contains(notifications, RoomScanText.NoScannedSurface);
         }
 
+        [UnityTest]
+        public IEnumerator HotPhone_EndsTheScan_AndKeepsWhatWasScanned()
+        {
+            scanner.StartScan();
+            yield return WaitUntil(() => scanner.HasModel);
+            Assert.IsTrue(scanner.IsScanning);
+            CollectionAssert.DoesNotContain(notifications, RoomScanText.PhoneHot);
+
+            scanner.SetThermalStatusForTests(() => ScanPacing.HotStatus);
+            yield return WaitUntil(() => !scanner.IsScanning);
+
+            Assert.IsFalse(scanner.IsScanning);
+            Assert.IsTrue(scanner.HasModel, "What was scanned stays.");
+            CollectionAssert.Contains(notifications, RoomScanText.PhoneHot);
+        }
+
+        [UnityTest]
+        public IEnumerator WarmPhone_ScansMoreSlowly_AndSaysSoOnce()
+        {
+            scanner.SetThermalStatusForTests(() => ScanPacing.WarmStatus);
+            scanner.StartScan();
+            yield return WaitUntil(() => scanner.HasModel
+                                         && scanner.Diagnostics.ThermalStatus == ScanPacing.WarmStatus);
+
+            Assert.IsTrue(scanner.IsScanning);
+            Assert.IsTrue(scanner.Pacing.IsWarm);
+            Assert.AreEqual(ScanPacing.SlowInterval, scanner.Pacing.Interval);
+            Assert.AreEqual(ScanPacing.WarmStatus, scanner.Diagnostics.ThermalStatus);
+
+            // Asked again, the phone is still warm: that was said already.
+            scanner.SetThermalStatusForTests(() => ScanPacing.WarmStatus);
+            yield return null;
+            yield return null;
+            Assert.AreEqual(1, notifications.FindAll(text => text == RoomScanText.PhoneWarm).Count);
+            CollectionAssert.DoesNotContain(notifications, RoomScanText.PhoneHot);
+        }
+
+        [UnityTest]
+        public IEnumerator PhoneThatDoesNotSayHowWarmItIs_ScansOn()
+        {
+            scanner.SetThermalStatusForTests(() => ThermalStatus.Unknown);
+            scanner.StartScan();
+            yield return WaitUntil(() => scanner.HasModel);
+
+            Assert.IsTrue(scanner.IsScanning);
+            Assert.IsFalse(scanner.Pacing.IsWarm);
+            CollectionAssert.DoesNotContain(notifications, RoomScanText.PhoneWarm);
+            CollectionAssert.DoesNotContain(notifications, RoomScanText.PhoneHot);
+        }
+
         /// <summary>
         /// Tracking points have no normals, so they find no surfaces by themselves: on a phone the
         /// planes ARCore detected tell the scan where to look.

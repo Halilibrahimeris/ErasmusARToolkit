@@ -18,8 +18,11 @@ MonoBehaviour:
   labelBackgroundMaterial: {fileID: 2100000, guid: 32a2c9665d0f0fb4fa2d487a487f31c0, type: 2}
   occluderMaterial: {fileID: 2100000, guid: 61c6f31fd44d8fa42a44dec4de782727, type: 2}
   surfaceDepthMaterial: {fileID: 2100000, guid: 56545238893ff0341bd43920705a6335, type: 2}
+  obstacleMaterial: {fileID: 2100000, guid: 825ea85945e727b4299fc274040cf87f, type: 2}
+  obstacleEdgeMaterial: {fileID: 2100000, guid: 58ab166fe5ccd0541bb07a0024f95a4f, type: 2}
   occluderShader: {fileID: 4800000, guid: 0fe114d1ad5fda449b0a99cfaa83cbcc, type: 3}
   surfaceDepthShader: {fileID: 4800000, guid: 33b60bb0a13ec8c4c901e4e6256504fd, type: 3}
+  obstacleShader: {fileID: 4800000, guid: 3f74df9e5b33edd4e929323b6932730f, type: 3}
   labelFont: {fileID: 0}
   labelTitleColor: {r: 1, g: 0.8, b: 0, a: 1}
   labelTextColor: {r: 1, g: 1, b: 1, a: 1}

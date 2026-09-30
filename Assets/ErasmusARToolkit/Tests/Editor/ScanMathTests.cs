@@ -259,6 +259,29 @@ namespace Erasmus.ARToolkit.Tests
         }
 
         [Test]
+        public void AfterTheMapMoved_AChangeIsFollowedAtOnce_ForAWhile()
+        {
+            var height = new HeightLock();
+            height.Update(0f, Redraw, null, false);
+            height.Hurry();
+
+            Assert.IsFalse(height.Update(0.01f, Redraw, null, false), "Within the dead band nothing moves, as ever.");
+            Assert.IsTrue(height.Update(-0.03f, Redraw, null, false), "The first redraw that shows the change.");
+            Assert.AreEqual(-0.01f, height.Value, 1e-5f, "At the usual pace.");
+            for (var i = 0; i < 10; i++)
+            {
+                height.Update(-0.03f, Redraw, null, false);
+            }
+
+            Assert.AreEqual(-0.03f, height.Value, HeightLock.Settle);
+
+            // Long after the jump a change has to last again.
+            Assert.IsFalse(height.Update(0.02f, Redraw, null, false));
+            Assert.IsFalse(height.Update(0.02f, Redraw, null, false));
+            Assert.IsTrue(height.Update(0.02f, Redraw, null, false));
+        }
+
+        [Test]
         public void OneOutlier_DoesNotStartAMove()
         {
             var height = new HeightLock();

@@ -185,6 +185,12 @@ namespace Erasmus.ARToolkit
             return heightLock.Update(Height, seconds, PlaneHeight, IsFloor);
         }
 
+        /// <summary>The map moved: the drawn height follows the measured one without waiting, for a while.</summary>
+        internal void HurryDrawnHeight()
+        {
+            heightLock.Hurry();
+        }
+
         internal void SetPriorWeight(float weight)
         {
             if (!Mathf.Approximately(PriorWeight, weight))
@@ -443,6 +449,120 @@ namespace Erasmus.ARToolkit
             }
 
             ShownArea = shownCells * CellArea;
+        }
+
+        /// <summary>Cell bounds of everything the level knows. False when it knows nothing.</summary>
+        internal bool TryGetCellBounds(out Vector2Int min, out Vector2Int max)
+        {
+            if (!TryGetChunkBounds(out min, out max))
+            {
+                return false;
+            }
+
+            min *= SurfaceChunk.Size;
+            max = max * SurfaceChunk.Size + Vector2Int.one * (SurfaceChunk.Size - 1);
+            return true;
+        }
+
+        /// <summary>
+        /// Marks the cells of a floor grid that lie under this surface: under the cells that are drawn
+        /// and the cells depth confirmed.
+        /// </summary>
+        /// <param name="blocks">
+        /// The surface stands on the floor like a table: the floor under its drawn cells is not drawn
+        /// and nothing is placed there.
+        /// </param>
+        internal void MarkCovered(SurfaceGrid floorGrid, bool blocks)
+        {
+            foreach (var pair in chunks)
+            {
+                var chunk = pair.Value;
+                var startX = pair.Key.x * SurfaceChunk.Size - floorGrid.OriginX;
+                var startZ = pair.Key.y * SurfaceChunk.Size - floorGrid.OriginZ;
+                for (var i = 0; i < SurfaceChunk.CellCount; i++)
+                {
+                    if (!chunk.Shown[i] && chunk.LogOdds[i] < SurfaceEvidence.ConfirmedLogOdds)
+                    {
+                        continue;
+                    }
+
+                    var x = startX + i % SurfaceChunk.Size;
+                    var z = startZ + i / SurfaceChunk.Size;
+                    if (!floorGrid.Contains(x, z))
+                    {
+                        continue;
+                    }
+
+                    var index = floorGrid.IndexOf(x, z);
+                    floorGrid.SetCovered(index, true);
+                    if (blocks && chunk.Shown[i])
+                    {
+                        floorGrid.SetBlocked(index, true);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// A raised surface stands in the room like any obstacle: its drawn cells are blocked cells of
+        /// the floor, as high as the surface.
+        /// </summary>
+        internal void MarkObstacle(ObstacleGrid grid)
+        {
+            foreach (var pair in chunks)
+            {
+                var chunk = pair.Value;
+                var startX = pair.Key.x * SurfaceChunk.Size - grid.OriginX;
+                var startZ = pair.Key.y * SurfaceChunk.Size - grid.OriginZ;
+                for (var i = 0; i < SurfaceChunk.CellCount; i++)
+                {
+                    if (!chunk.Shown[i])
+                    {
+                        continue;
+                    }
+
+                    var x = startX + i % SurfaceChunk.Size;
+                    var z = startZ + i / SurfaceChunk.Size;
+                    if (grid.Contains(x, z))
+                    {
+                        grid.Set(grid.IndexOf(x, z), DrawnHeight, 1f, Id);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// A large low surface (a podium) is a floor to walk on, not an obstacle: what was taken for an
+        /// obstacle at its height, under its drawn cells, is none.
+        /// </summary>
+        internal void FreeObstaclesOn(ObstacleGrid grid, float tolerance)
+        {
+            foreach (var pair in chunks)
+            {
+                var chunk = pair.Value;
+                var startX = pair.Key.x * SurfaceChunk.Size - grid.OriginX;
+                var startZ = pair.Key.y * SurfaceChunk.Size - grid.OriginZ;
+                for (var i = 0; i < SurfaceChunk.CellCount; i++)
+                {
+                    if (!chunk.Shown[i])
+                    {
+                        continue;
+                    }
+
+                    var x = startX + i % SurfaceChunk.Size;
+                    var z = startZ + i / SurfaceChunk.Size;
+                    if (!grid.Contains(x, z))
+                    {
+                        continue;
+                    }
+
+                    var index = grid.IndexOf(x, z);
+                    if (grid.IsBlocked(index) && !(grid.TopAt(index) > DrawnHeight + tolerance))
+                    {
+                        grid.Free(index);
+                    }
+                }
+            }
         }
 
         /// <summary>Nothing of the level is drawn (used when it cannot be drawn at all).</summary>

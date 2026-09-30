@@ -23,12 +23,18 @@ namespace Erasmus.ARToolkit
         Material occluderMaterial;
         [SerializeField, Tooltip("Depth-only material that steadies noisy real-world depth on scanned surfaces (room scan).")]
         Material surfaceDepthMaterial;
+        [SerializeField, Tooltip("See-through material of the boxes around scanned obstacles and walls (room scan).")]
+        Material obstacleMaterial;
+        [SerializeField, Tooltip("Material of the edges of those boxes.")]
+        Material obstacleEdgeMaterial;
 
         [Header("Shaders")]
         [SerializeField, Tooltip("Referenced here so the room scan shaders are part of every build.")]
         Shader occluderShader;
         [SerializeField, Tooltip("Referenced here so the room scan shaders are part of every build.")]
         Shader surfaceDepthShader;
+        [SerializeField, Tooltip("Referenced here so the room scan shaders are part of every build.")]
+        Shader obstacleShader;
 
         [Header("Info Labels")]
         [SerializeField, Tooltip("TextMeshPro font for info labels. Empty uses the TMP default font.")]
@@ -49,6 +55,9 @@ namespace Erasmus.ARToolkit
         public Material SurfaceDepthMaterial => surfaceDepthMaterial;
         public Shader OccluderShader => occluderShader;
         public Shader SurfaceDepthShader => surfaceDepthShader;
+        public Material ObstacleMaterial => obstacleMaterial;
+        public Material ObstacleEdgeMaterial => obstacleEdgeMaterial;
+        public Shader ObstacleShader => obstacleShader;
         public TMP_FontAsset LabelFont => labelFont;
         public Color LabelTitleColor => labelTitleColor;
         public Color LabelTextColor => labelTextColor;
@@ -61,12 +70,13 @@ namespace Erasmus.ARToolkit
             && labelBackgroundMaterial != null;
 
         /// <summary>
-        /// The room scan's depth-only materials and their shaders are assigned. Without them a build has no
-        /// table occluders and no steady surface depth (Run Setup adds them).
+        /// The room scan's materials and their shaders are assigned. Without them a build has no table
+        /// occluders, no steady surface depth and no boxes around obstacles (Run Setup adds them).
         /// </summary>
         public bool HasRoomScanAssets =>
             occluderMaterial != null && surfaceDepthMaterial != null
-            && occluderShader != null && surfaceDepthShader != null;
+            && occluderShader != null && surfaceDepthShader != null
+            && obstacleMaterial != null && obstacleEdgeMaterial != null && obstacleShader != null;
 
         internal void SetMaterials(Material ground, Material highlight, Material imageTarget, Material labelBackground)
         {
@@ -90,6 +100,13 @@ namespace Erasmus.ARToolkit
         {
             occluderShader = occluder;
             surfaceDepthShader = surfaceDepth;
+        }
+
+        internal void SetObstacleAssets(Material fill, Material edge, Shader shader)
+        {
+            obstacleMaterial = fill;
+            obstacleEdgeMaterial = edge;
+            obstacleShader = shader;
         }
     }
 }

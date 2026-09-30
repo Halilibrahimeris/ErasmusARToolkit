@@ -6,8 +6,10 @@ namespace Erasmus.ARToolkit
     public readonly struct RoomScanProgress
     {
         public RoomScanProgress(bool isScanning, int surfaceCount, float surfaceArea, float checkedArea, bool isPrecise,
-            bool floorFound = true)
+            bool floorFound = true, int obstacleCount = 0, int wallCount = 0)
         {
+            ObstacleCount = obstacleCount;
+            WallCount = wallCount;
             IsScanning = isScanning;
             SurfaceCount = surfaceCount;
             SurfaceArea = surfaceArea;
@@ -32,6 +34,12 @@ namespace Erasmus.ARToolkit
 
         /// <summary>The scan knows which surface the floor is.</summary>
         public bool FloorFound { get; }
+
+        /// <summary>Things that stand in the room, with a box around each.</summary>
+        public int ObstacleCount { get; }
+
+        /// <summary>Walls of the room that were found.</summary>
+        public int WallCount { get; }
     }
 
     /// <summary>Texts the HUD shows for the room scan.</summary>
@@ -54,6 +62,11 @@ namespace Erasmus.ARToolkit
         public const string FloorSet = "This surface is the floor now.";
         public const string ScanMoved =
             "The scan no longer matches the room. Tap Scan Room, then Reset, and scan again.";
+        public const string LooksComplete = "The scan has found nothing new for a while. Tap Finish Scan when you are done.";
+        public const string PhoneWarm = "The phone is getting warm, so the scan is slower now.";
+        public const string PhoneHot = "The phone is hot. The scan was finished to let it cool down.";
+        public const string ObstacleThere = "Something stands there. Pick a free spot.";
+        public const string WallThere = "That is behind a wall. Pick a spot in the room.";
         public const string TooFar =
             "This is too far from where the scan started. Nothing is added here.";
 
@@ -62,6 +75,16 @@ namespace Erasmus.ARToolkit
         public static string Progress(RoomScanProgress progress)
         {
             var text = $"Scanning · {Surfaces(progress.SurfaceCount)} · {Area(progress.CheckedArea)} m² checked";
+            if (progress.ObstacleCount > 0)
+            {
+                text += " · " + Obstacles(progress.ObstacleCount);
+            }
+
+            if (progress.WallCount > 0)
+            {
+                text += " · " + Walls(progress.WallCount);
+            }
+
             if (!progress.FloorFound)
             {
                 text += " · " + FindingFloor;
@@ -78,5 +101,9 @@ namespace Erasmus.ARToolkit
         static string Area(float squareMeters) => squareMeters.ToString("0.0", CultureInfo.InvariantCulture);
 
         static string Surfaces(int count) => count == 1 ? "1 surface" : count + " surfaces";
+
+        static string Obstacles(int count) => count == 1 ? "1 obstacle" : count + " obstacles";
+
+        static string Walls(int count) => count == 1 ? "1 wall" : count + " walls";
     }
 }

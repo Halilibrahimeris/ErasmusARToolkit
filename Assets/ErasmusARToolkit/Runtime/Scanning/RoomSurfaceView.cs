@@ -13,6 +13,9 @@ namespace Erasmus.ARToolkit
     /// depth (<see cref="SurfaceDepthMaterials"/>), so grids and objects standing on it are not cut. The
     /// floor gets one first, then the largest surfaces; the correction of a trusted floor covers the
     /// floor all around the camera.</item>
+    /// <item>boxes around what stands in the room and panels where its walls are, see-through with edges
+    /// (hidden with "Hide Planes"). They write no depth: they are rough guesses, and must not cut into
+    /// virtual objects.</item>
     /// </list>
     /// Meshes are in the space of the scan, under the root of its <see cref="MapFrame"/>, and lie at
     /// height 0 of their level's object: a height that changes moves the object and needs no new mesh.
@@ -30,7 +33,11 @@ namespace Erasmus.ARToolkit
         /// <summary>The top of an occluder lies this far (meters) below its surface, under the grid.</summary>
         public const float OccluderDrop = 0.015f;
 
+        static readonly int FadeHeightId = Shader.PropertyToID("_FadeHeight");
+        static readonly int FloorHeightId = Shader.PropertyToID("_FloorHeight");
+        static readonly int CullId = Shader.PropertyToID("_Cull");
         static readonly int GridFrameId = Shader.PropertyToID("_GridFrame");
+        static readonly int BaseMapId = Shader.PropertyToID("_BaseMap");
         static readonly int DepthBiasId = Shader.PropertyToID("_DepthBias");
         static readonly int HeightToleranceId = Shader.PropertyToID("_HeightTolerance");
         static readonly int MaxDepthBiasId = Shader.PropertyToID("_MaxDepthBias");
@@ -49,6 +56,14 @@ namespace Erasmus.ARToolkit
         readonly List<int> windowTriangles = new List<int>();
         Vector4 gridFrame = new Vector4(0f, 0f, 1f, 0f);
         Vector3 cameraPosition;
+        Material obstacleFillMaterial;
+        Material obstacleOutlineMaterial;
+        Material wallFillMaterial;
+        Material wallOutlineMaterial;
+        Part obstacleFill;
+        Part obstacleOutline;
+        Part wallFill;
+        Part wallOutline;
         bool visible = true;
 
         /// <param name="surfaceRoot">Parent of the drawn surfaces. It belongs to the scan, not to the view.</param>
@@ -74,20 +89,135 @@ namespace Erasmus.ARToolkit
         /// <summary>Surfaces that have a depth correction right now.</summary>
         public int DepthSlotsUsed => depthMaterials.UsedCount;
 
+        /// <summary>Boxes that are drawn right now.</summary>
+        public int ObstacleVertexCount => obstacleFill != null ? obstacleFill.Mesh.vertexCount : 0;
+
+        /// <summary>Walls that are drawn right now (vertices of their panels).</summary>
+        public int WallVertexCount => wallFill != null ? wallFill.Mesh.vertexCount : 0;
+
+        /// <summary>
+        /// The materials of the boxes around obstacles. Without them no boxes are drawn. The walls are
+        /// drawn with copies that fade toward the top and show from both sides.
+        /// </summary>
+        public void SetObstacleMaterials(Material fill, Material outline)
+        {
+            obstacleFillMaterial = fill;
+            obstacleOutlineMaterial = outline;
+            obstacleFill?.SetMaterial(fill);
+            obstacleOutline?.SetMaterial(outline);
+            ObjectUtility.SafeDestroy(wallFillMaterial);
+            ObjectUtility.SafeDestroy(wallOutlineMaterial);
+            wallFillMaterial = WallCopy(fill);
+            wallOutlineMaterial = WallCopy(outline);
+            wallFill?.SetMaterial(wallFillMaterial);
+            wallOutline?.SetMaterial(wallOutlineMaterial);
+        }
+
+        static Material WallCopy(Material source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            var copy = new Material(source) { name = source.name + " (wall)" };
+            if (copy.HasProperty(FadeHeightId))
+            {
+                copy.SetFloat(FadeHeightId, WallModel.MaxDrawnHeight);
+                copy.SetFloat(CullId, (float)CullMode.Off);
+            }
+
+            return copy;
+        }
+
+        public void ShowWalls(ObstacleMeshData data, float floorHeight)
+        {
+            if (root == null || (wallFillMaterial == null && wallOutlineMaterial == null))
+            {
+                return;
+            }
+
+            if (wallFill == null)
+            {
+                wallFill = new Part(root, "Wall Fill", wallFillMaterial, null);
+                wallOutline = new Part(root, "Wall Outline", wallOutlineMaterial, null);
+                wallFill.SetVisible(visible);
+                wallOutline.SetVisible(visible);
+            }
+
+            wallFill.Apply(data.FillVertices, data.FillTriangles);
+            wallOutline.Apply(data.OutlineVertices, data.OutlineTriangles);
+            wallFloor = floorHeight;
+            ApplyWallFloor();
+        }
+
+        float wallFloor;
+
+        /// <summary>The walls fade from the floor up: the material has to know where the floor is, in the world.</summary>
+        void ApplyWallFloor()
+        {
+            var height = root != null ? root.TransformPoint(new Vector3(0f, wallFloor, 0f)).y : wallFloor;
+            if (wallFillMaterial != null && wallFillMaterial.HasProperty(FloorHeightId))
+            {
+                wallFillMaterial.SetFloat(FloorHeightId, height);
+            }
+
+            if (wallOutlineMaterial != null && wallOutlineMaterial.HasProperty(FloorHeightId))
+            {
+                wallOutlineMaterial.SetFloat(FloorHeightId, height);
+            }
+        }
+
+        public void ShowObstacles(ObstacleMeshData data)
+        {
+            if (root == null || (obstacleFillMaterial == null && obstacleOutlineMaterial == null))
+            {
+                return;
+            }
+
+            if (obstacleFill == null)
+            {
+                obstacleFill = new Part(root, "Obstacle Fill", obstacleFillMaterial, null);
+                obstacleOutline = new Part(root, "Obstacle Outline", obstacleOutlineMaterial, null);
+                obstacleFill.SetVisible(visible);
+                obstacleOutline.SetVisible(visible);
+            }
+
+            obstacleFill.Apply(data.FillVertices, data.FillTriangles);
+            obstacleOutline.Apply(data.OutlineVertices, data.OutlineTriangles);
+        }
+
         /// <summary>The surface has a depth correction: what stands on it is not cut by depth noise.</summary>
         public bool HasDepthSlot(int levelId)
         {
             return views.TryGetValue(levelId, out var view) && view.DepthSlot >= 0;
         }
 
+        /// <summary>The grid has lines this far (meters) apart.</summary>
+        public void SetGridCellSize(float meters)
+        {
+            var tiling = Vector2.one / Mathf.Clamp(meters, 0.1f, 1f);
+            SetTiling(fillMaterial, tiling);
+            SetTiling(steadyFillMaterial, tiling);
+        }
+
+        static void SetTiling(Material material, Vector2 tiling)
+        {
+            if (material != null && material.HasProperty(BaseMapId))
+            {
+                material.SetTextureScale(BaseMapId, tiling);
+            }
+        }
+
         /// <summary>
         /// Tells the grid where the space of the scan lies, so the grid lines keep their place on the
-        /// surfaces when the scan moves or turns.
+        /// surfaces when the scan moves or turns, and run along the walls of the room.
         /// </summary>
-        public void SetGridFrame(Transform frame)
+        /// <param name="roomYaw">Direction of the walls in the space of the scan, in degrees.</param>
+        public void SetGridFrame(Transform frame, float roomYaw = 0f)
         {
             var position = frame.position;
-            var yaw = frame.eulerAngles.y * Mathf.Deg2Rad;
+            var yaw = (frame.eulerAngles.y + roomYaw) * Mathf.Deg2Rad;
             var value = new Vector4(position.x, position.z, Mathf.Cos(yaw), Mathf.Sin(yaw));
             if (value == gridFrame)
             {
@@ -95,6 +225,7 @@ namespace Erasmus.ARToolkit
             }
 
             gridFrame = value;
+            ApplyWallFloor();
             ApplyGridFrame(fillMaterial);
             ApplyGridFrame(outlineMaterial);
             ApplyGridFrame(steadyFillMaterial);
@@ -154,7 +285,10 @@ namespace Erasmus.ARToolkit
             AssignDepthSlots();
         }
 
-        /// <summary>Hides the grid and outline. Occluders and depth corrections stay: they are about the real world.</summary>
+        /// <summary>
+        /// Hides the grids, the outlines and the boxes. Occluders and depth corrections stay: they are
+        /// about the real world.
+        /// </summary>
         public void SetVisible(bool value)
         {
             visible = value;
@@ -162,6 +296,11 @@ namespace Erasmus.ARToolkit
             {
                 view.SetVisible(value);
             }
+
+            obstacleFill?.SetVisible(value);
+            obstacleOutline?.SetVisible(value);
+            wallFill?.SetVisible(value);
+            wallOutline?.SetVisible(value);
         }
 
         public void Clear()
@@ -172,11 +311,21 @@ namespace Erasmus.ARToolkit
             }
 
             views.Clear();
+            obstacleFill?.Clear();
+            obstacleOutline?.Clear();
+            wallFill?.Clear();
+            wallOutline?.Clear();
         }
 
         public void Dispose()
         {
             Clear();
+            obstacleFill?.Destroy();
+            obstacleOutline?.Destroy();
+            wallFill?.Destroy();
+            wallOutline?.Destroy();
+            ObjectUtility.SafeDestroy(wallFillMaterial);
+            ObjectUtility.SafeDestroy(wallOutlineMaterial);
             depthMaterials.Dispose();
             ObjectUtility.SafeDestroy(fillMaterial);
             ObjectUtility.SafeDestroy(outlineMaterial);
@@ -484,6 +633,12 @@ namespace Erasmus.ARToolkit
                 Refresh();
             }
 
+            public void Clear()
+            {
+                Mesh.Clear();
+                Refresh();
+            }
+
             /// <summary>Draws another mesh (one it does not own).</summary>
             public void SetMesh(Mesh mesh)
             {
@@ -523,6 +678,11 @@ namespace Erasmus.ARToolkit
                 if (ownsMesh)
                 {
                     ObjectUtility.SafeDestroy(Mesh);
+                }
+
+                if (Transform != null)
+                {
+                    ObjectUtility.SafeDestroy(Transform.gameObject);
                 }
             }
 

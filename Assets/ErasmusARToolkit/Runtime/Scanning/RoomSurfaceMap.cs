@@ -18,6 +18,8 @@ namespace Erasmus.ARToolkit
     /// a depth point below a trusted floor is a reflection or a bad measurement: its ray is cut off at the
     /// floor. It carves nothing, makes no level, and where the floor is known it counts as a weak sign of
     /// the floor. Without this rule a shiny floor gets holes and a second, lower "floor".</item>
+    /// <item>What stands on the trusted floor is kept in an <see cref="ObstacleMap"/>: chairs, bags,
+    /// cabinets. Their cells of the floor are not drawn, and boxes are laid around them.</item>
     /// </list>
     /// How close a point must be depends on its distance (<see cref="DepthNoise"/>), and how much it counts
     /// on how sure ARCore is of it. Levels closer than <see cref="LevelMergeDistance"/> are one surface. A
@@ -61,6 +63,29 @@ namespace Erasmus.ARToolkit
         /// <summary>More levels than this are not kept: the weakest go.</summary>
         public const int MaxLevels = 12;
 
+        /// <summary>What lies lower than this (meters) above the floor is the floor, measured badly.</summary>
+        public const float ObstacleMinHeight = 0.08f;
+
+        /// <summary>What lies higher than this (meters) above the floor stands in nobody's way.</summary>
+        public const float ObstacleMaxHeight = 2f;
+
+        /// <summary>Obstacles lower than this (meters)...</summary>
+        public const float LowObstacleHeight = 0.3f;
+
+        /// <summary>...are only found this close (meters): farther away they cannot be told from noise.</summary>
+        public const float LowObstacleRange = 2.5f;
+
+        /// <summary>A raised surface of at least this area (square meters)...</summary>
+        public const float TierMinArea = 1.5f;
+
+        /// <summary>...that lies lower than this (meters) above the floor is a podium: a floor to walk on, not an obstacle.</summary>
+        public const float TierMaxHeight = 0.4f;
+
+        /// <summary>A box has to be this old (seconds) and this sure before placement is refused behind it.</summary>
+        public const float RefusalAge = 3f;
+
+        public const float RefusalConfidence = 0.5f;
+
         [Obsolete("Levels are created and merged with LevelMergeDistance.")]
         public const float RefinedMergeDistance = LevelMergeDistance;
 
@@ -90,6 +115,9 @@ namespace Erasmus.ARToolkit
 
         const float HeightBinSize = 0.02f;
         const float HeightDecay = 0.97f;
+
+        /// <summary>What was measured before the map moved counts this much after it.</summary>
+        const float JumpFade = 0.25f;
         const float SparseHeightWeight = 0.5f;
 
         /// <summary>Observations (distinct cells, summed over frames) that make a height peak.</summary>
@@ -121,6 +149,20 @@ namespace Erasmus.ARToolkit
         /// <summary>Levels below the floor are not hit by placement rays (meters below the drawn floor).</summary>
         const float FloorGuard = 0.02f;
 
+        /// <summary>What is this close (meters) to the user is the user: legs, feet, the hand with the phone.</summary>
+        const float BodyRadius = 0.45f;
+
+        /// <summary>The body is this far (meters) behind the phone.</summary>
+        const float BodyBehind = 0.2f;
+
+        /// <summary>Camera rays per frame that are followed over the cells they pass.</summary>
+        const int MaxObstacleRays = 1500;
+
+        const int MaxRaySteps = 90;
+        const float ObstacleRayMargin = 0.05f;
+        const float RefusalMargin = 0.02f;
+        const float OnTopMargin = 0.03f;
+
         const float DefaultFrameSeconds = 0.125f;
         const float MinFrameWeight = 0.05f;
         const float PruneConfirmedArea = 0.1f;
@@ -143,6 +185,10 @@ namespace Erasmus.ARToolkit
         readonly HeightHistogram heights = new HeightHistogram();
         readonly FrameCellSet frameCells = new FrameCellSet();
         readonly FloorModel floor = new FloorModel { PlanesNeedDepth = true };
+        readonly ObstacleMap obstacles = new ObstacleMap();
+        readonly WallModel walls = new WallModel();
+        readonly List<ObstacleVolume> volumes = new List<ObstacleVolume>();
+        SurfaceLevel obstacleFloor;
         Vector3[] pointPositions = Array.Empty<Vector3>();
         float[] pointDistances = Array.Empty<float>();
         byte[] pointFlags = Array.Empty<byte>();
@@ -188,6 +234,27 @@ namespace Erasmus.ARToolkit
 
         internal FloorModel Floor => floor;
 
+        /// <summary>Looks for what stands on the floor (chairs, bags, cabinets). On by default.</summary>
+        public bool DetectObstacles { get; set; } = true;
+
+        /// <summary>What stands on the floor, cell by cell.</summary>
+        internal ObstacleMap Obstacles => obstacles;
+
+        /// <summary>
+        /// The boxes around what stands in the room, in the space of the map. Made anew with every redraw
+        /// (see <see cref="RoomModelBuilder"/>).
+        /// </summary>
+        internal List<ObstacleVolume> Volumes => volumes;
+
+        /// <summary>Looks for the walls of the room. On by default.</summary>
+        public bool DetectWalls { get; set; } = true;
+
+        /// <summary>The walls of the room.</summary>
+        internal WallModel Walls => walls;
+
+        /// <summary>Time of the last frame, in seconds.</summary>
+        internal double Clock => clock;
+
         /// <summary>Two levels were one surface: the first id is gone, its cells are in the second.</summary>
         internal event Action<int, int> LevelMerged;
 
@@ -210,6 +277,10 @@ namespace Erasmus.ARToolkit
             checkedCells.Clear();
             discovery.Clear();
             heights.Clear();
+            obstacles.Clear();
+            walls.Clear();
+            volumes.Clear();
+            obstacleFloor = null;
             floor.Reset();
             inPriorBatch = false;
             clock = 0.0;
@@ -283,44 +354,27 @@ namespace Erasmus.ARToolkit
             var level = floor.Level != null && Mathf.Abs(height - floor.Level.Height) <= FloorPlaneDistance
                 ? floor.Level
                 : levels[EnsureLevel(height)];
-            var minZ = polygon[0].y;
-            var maxZ = polygon[0].y;
-            for (var i = 1; i < polygon.Count; i++)
+            var sink = new PriorCells(level);
+            PolygonRaster.FillRows(polygon, CellSize, ref sink, crossings);
+            level.AddPlaneSample(height, sink.Cells * CellSize * CellSize);
+        }
+
+        struct PriorCells : IRowSink
+        {
+            readonly SurfaceLevel level;
+
+            public PriorCells(SurfaceLevel surfaceLevel)
             {
-                minZ = Mathf.Min(minZ, polygon[i].y);
-                maxZ = Mathf.Max(maxZ, polygon[i].y);
+                level = surfaceLevel;
+                Cells = 0;
             }
 
-            var cells = 0;
-            var lastRow = Mathf.FloorToInt(maxZ / CellSize);
-            for (var row = Mathf.FloorToInt(minZ / CellSize); row <= lastRow; row++)
+            public int Cells { get; private set; }
+
+            public void AddRun(int row, int first, int last)
             {
-                var z = (row + 0.5f) * CellSize;
-                crossings.Clear();
-                for (int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++)
-                {
-                    var a = polygon[i];
-                    var b = polygon[j];
-                    if ((a.y > z) != (b.y > z))
-                    {
-                        crossings.Add(a.x + (z - a.y) * (b.x - a.x) / (b.y - a.y));
-                    }
-                }
-
-                crossings.Sort();
-                for (var k = 0; k + 1 < crossings.Count; k += 2)
-                {
-                    // Cells whose centers lie between the two crossings.
-                    var first = Mathf.CeilToInt(crossings[k] / CellSize - 0.5f);
-                    var last = Mathf.FloorToInt(crossings[k + 1] / CellSize - 0.5f);
-                    if (first <= last)
-                    {
-                        cells += level.SetPriorRun(row, first, last);
-                    }
-                }
+                Cells += level.SetPriorRun(row, first, last);
             }
-
-            level.AddPlaneSample(height, cells * CellSize * CellSize);
         }
 
         /// <summary>Adds one camera frame of evidence. Each cell counts at most once per frame.</summary>
@@ -335,6 +389,7 @@ namespace Erasmus.ARToolkit
             clock = frame.Time > clock ? frame.Time : clock + DefaultFrameSeconds;
             var weight = Mathf.Clamp(frame.Weight, MinFrameWeight, 1f);
             floor.NoteCamera(frame.Origin.y, clock);
+            walls.NoteCamera(new Vector2(frame.Origin.x, frame.Origin.z));
             frameCells.NextFrame();
 
             // The floor is picked before the heights are refined: depth corrects the height of a floor
@@ -347,6 +402,7 @@ namespace Erasmus.ARToolkit
             PruneLevels();
             CollectVotes(frame, weight);
             ApplyVotes(frame.HasNormals ? SurfaceEvidence.HitWeight : SurfaceEvidence.SparseHitWeight, weight);
+            UpdateObstacles(frame, weight);
         }
 
         /// <summary>
@@ -383,7 +439,10 @@ namespace Erasmus.ARToolkit
             return large ?? lowest;
         }
 
-        /// <summary>Nearest shown surface along the ray. The pose faces up (y) like a detected plane.</summary>
+        /// <summary>
+        /// Nearest shown surface along the ray that can be reached: not one behind or under something
+        /// that stands in the room. The pose faces up (y) like a detected plane.
+        /// </summary>
         public bool Raycast(Ray ray, float maxDistance, out Pose pose)
         {
             return Raycast(ray, maxDistance, out pose, out _);
@@ -392,8 +451,142 @@ namespace Erasmus.ARToolkit
         /// <param name="levelId">Id of the level that was hit (see <see cref="SurfaceLevel.Id"/>).</param>
         internal bool Raycast(Ray ray, float maxDistance, out Pose pose, out int levelId)
         {
+            return Raycast(ray, maxDistance, out pose, out levelId, out var blocked) && !blocked;
+        }
+
+        /// <param name="blocked">
+        /// Something stands in the way: the ray goes through the box of an obstacle before it reaches
+        /// the surface, it ends on a seat, or it ends on the floor where something stands. Nothing
+        /// should be placed there.
+        /// </param>
+        internal bool Raycast(Ray ray, float maxDistance, out Pose pose, out int levelId, out bool blocked)
+        {
+            return Raycast(ray, maxDistance, out pose, out levelId, out blocked, out _);
+        }
+
+        /// <param name="behindWall">What stands in the way is a wall of the room.</param>
+        internal bool Raycast(Ray ray, float maxDistance, out Pose pose, out int levelId, out bool blocked,
+            out bool behindWall)
+        {
+            var found = RaycastSurfaces(ray, maxDistance, out pose, out levelId, out var distance);
+            if (found)
+            {
+                behindWall = IsBehindWall(ray, distance);
+                blocked = behindWall || IsBehindObstacle(ray, distance, pose.position);
+                return true;
+            }
+
+            // Nothing is drawn there. When that is because something stands there, the user is told so.
+            behindWall = TryGetFloorPoint(ray, maxDistance, out pose, out distance) && IsBehindWall(ray, distance);
+            blocked = behindWall || IsOnBlockedFloor(ray, maxDistance, out pose);
+            return false;
+        }
+
+        /// <summary>Where the ray meets the height of the floor.</summary>
+        bool TryGetFloorPoint(Ray ray, float maxDistance, out Pose pose, out float distance)
+        {
+            pose = default;
+            distance = 0f;
+            if (floor.Level == null || Mathf.Abs(ray.direction.y) < 1e-4f)
+            {
+                return false;
+            }
+
+            var height = floor.DrawnHeight;
+            distance = (height - ray.origin.y) / ray.direction.y;
+            if (distance <= 0f || distance >= maxDistance)
+            {
+                return false;
+            }
+
+            var point = ray.GetPoint(distance);
+            pose = new Pose(new Vector3(point.x, height, point.z), Quaternion.identity);
+            return true;
+        }
+
+        /// <summary>The ray goes through a wall before it reaches the surface: the spot lies in another room.</summary>
+        bool IsBehindWall(Ray ray, float hitDistance)
+        {
+            if (!DetectWalls)
+            {
+                return false;
+            }
+
+            var segments = walls.Segments;
+            for (var i = 0; i < segments.Count; i++)
+            {
+                if (segments[i].Raycast(ray, out var enter) && enter < hitDistance - RefusalMargin)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        bool IsBehindObstacle(Ray ray, float hitDistance, Vector3 hit)
+        {
+            for (var i = 0; i < volumes.Count; i++)
+            {
+                var volume = volumes[i];
+                if (volume.Age < RefusalAge || volume.Confidence < RefusalConfidence
+                    || !volume.Raycast(ray, out var enter))
+                {
+                    continue;
+                }
+
+                var onItsTop = Mathf.Abs(hit.y - volume.Top) <= OnTopMargin && volume.ContainsXZ(hit, OnTopMargin);
+                if (onItsTop)
+                {
+                    // Things are put on tables. A seat is for sitting: what is put there is sat on.
+                    if (volume.Kind == ObstacleKind.Seat)
+                    {
+                        return true;
+                    }
+
+                    continue;
+                }
+
+                if (enter < hitDistance - RefusalMargin)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>The ray ends on the floor, in a cell that is not drawn because something stands there.</summary>
+        bool IsOnBlockedFloor(Ray ray, float maxDistance, out Pose pose)
+        {
+            if (!TryGetFloorPoint(ray, maxDistance, out pose, out _) || !floor.Level.IsUsable)
+            {
+                return false;
+            }
+
+            var point = pose.position;
+            var height = point.y;
+            var cell = CellOf(point.x, point.z);
+            for (var dz = -1; dz <= 1; dz++)
+            {
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    if (obstacles.IsBlocked(new Vector2Int(cell.x + dx, cell.y + dz)))
+                    {
+                        pose = new Pose(new Vector3(point.x, height, point.z), Quaternion.identity);
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        bool RaycastSurfaces(Ray ray, float maxDistance, out Pose pose, out int levelId, out float hitDistance)
+        {
             pose = default;
             levelId = -1;
+            hitDistance = maxDistance;
             var bestDistance = maxDistance;
             var found = false;
             if (Mathf.Abs(ray.direction.y) < 1e-4f)
@@ -426,7 +619,23 @@ namespace Erasmus.ARToolkit
                 }
             }
 
+            hitDistance = bestDistance;
             return found;
+        }
+
+        /// <summary>
+        /// The level is a podium or a stage: large, and low enough to step on. It is a floor to walk
+        /// on, so it is no obstacle and what stands on it is measured from the floor all the same.
+        /// </summary>
+        internal bool IsTier(SurfaceLevel level)
+        {
+            if (level == null || level.IsFloor || !level.IsUsable || floor.Level == null)
+            {
+                return false;
+            }
+
+            var above = level.DrawnHeight - floor.DrawnHeight;
+            return above > 0f && above < TierMaxHeight && level.ShownArea >= TierMinArea;
         }
 
         /// <summary>The level with this id, or null.</summary>
@@ -560,6 +769,21 @@ namespace Erasmus.ARToolkit
                 pointPositions[i] = point;
                 pointDistances[i] = distance;
                 pointFlags[i] = flags;
+            }
+        }
+
+        /// <summary>
+        /// ARCore corrected its map, and the scan moved with it by a few centimeters. When that was
+        /// right, depth finds every surface where it is now. When it was not, the heights measured
+        /// before say where the surfaces were: they count less from now on, so that what is measured
+        /// now is heard sooner, and the drawn heights follow without their usual wait.
+        /// </summary>
+        internal void NoteMapMoved()
+        {
+            heights.Decay(JumpFade);
+            foreach (var level in levels)
+            {
+                level.HurryDrawnHeight();
             }
         }
 
@@ -968,6 +1192,141 @@ namespace Erasmus.ARToolkit
                 }
 
                 checkedCells.Add(((long)vote.Cell.x << 32) ^ (uint)vote.Cell.y);
+            }
+        }
+
+        /// <summary>
+        /// Collects what stands on the floor from the points of the frame (see <see cref="ObstacleMap"/>).
+        /// Only while the floor is trusted: heights above a floor that is not known mean nothing.
+        /// </summary>
+        void UpdateObstacles(ScanFrame frame, float weight)
+        {
+            if (!DetectObstacles || !floor.IsTrusted)
+            {
+                return;
+            }
+
+            if (obstacleFloor != floor.Level)
+            {
+                // Another floor: what was found stands on the old one.
+                obstacles.Clear();
+                volumes.Clear();
+                obstacleFloor = floor.Level;
+            }
+
+            var floorHeight = floor.Height;
+            var origin = frame.Origin;
+            if (origin.y <= floorHeight)
+            {
+                return;
+            }
+
+            obstacles.BeginFrame(clock, weight);
+            var forward = frame.Rotation * Vector3.forward;
+            var behind = new Vector2(forward.x, forward.z);
+            behind = behind.sqrMagnitude > 1e-6f ? behind.normalized * BodyBehind : Vector2.zero;
+            var body = new Vector2(origin.x, origin.z) - behind;
+            var every = Mathf.Max(1, frame.Count / MaxObstacleRays);
+            for (var i = 0; i < frame.Count; i++)
+            {
+                var flags = pointFlags[i];
+                if ((flags & Usable) == 0)
+                {
+                    continue;
+                }
+
+                var point = pointPositions[i];
+                var distance = pointDistances[i];
+                var confidence = frame.ConfidenceAt(i);
+                bool floorSeen;
+                if ((flags & Clipped) != 0)
+                {
+                    // Seen through a floor cell that is known: nothing stands between it and the camera.
+                    floorSeen = (flags & Reflection) != 0;
+                }
+                else
+                {
+                    if (confidence < MinConfidence || distance < MinHitRange || distance > MaxHitRange)
+                    {
+                        continue;
+                    }
+
+                    var above = point.y - floorHeight;
+                    var facesUp = !frame.HasNormals || frame.IsUpFacing(i);
+                    var tolerance = DepthNoise.HitTolerance(distance);
+                    floorSeen = facesUp && Mathf.Abs(above) <= tolerance;
+                    if (!floorSeen && above >= Mathf.Max(ObstacleMinHeight, 3f * DepthNoise.Sigma(distance))
+                        && above <= ObstacleMaxHeight
+                        && (above >= LowObstacleHeight || distance <= LowObstacleRange)
+                        && (new Vector2(point.x, point.z) - body).sqrMagnitude >= BodyRadius * BodyRadius
+                        && !(facesUp && LiesOnTier(point.y, tolerance)))
+                    {
+                        obstacles.AddHit(pointCells[i], point.y);
+                    }
+                }
+
+                if (!floorSeen)
+                {
+                    continue;
+                }
+
+                obstacles.AddFloorSeen(pointCells[i]);
+                if (confidence >= CarveConfidence && frame.AllowCarving && i % every == 0)
+                {
+                    TraceOverObstacles(origin, point, floorHeight);
+                }
+            }
+
+            obstacles.EndFrame();
+        }
+
+        bool LiesOnTier(float height, float tolerance)
+        {
+            for (var i = 0; i < levels.Count; i++)
+            {
+                if (Mathf.Abs(levels[i].Height - height) <= tolerance && IsTier(levels[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// A camera ray that reaches the floor went through the space above every cell on its way. Where
+        /// something is believed to stand, and the ray passed lower than its top, it is not there.
+        /// </summary>
+        void TraceOverObstacles(Vector3 origin, Vector3 end, float floorHeight)
+        {
+            var ray = new GridRay();
+            ray.Start(new Vector2(origin.x, origin.z), new Vector2(end.x, end.z));
+            var last = CellOf(end.x, end.z);
+            for (var step = 0; step < MaxRaySteps && ray.Next(out var cell, out var enter, out var exit); step++)
+            {
+                if (cell == last)
+                {
+                    return;
+                }
+
+                if (!obstacles.MayHaveObstacles(cell))
+                {
+                    continue;
+                }
+
+                var top = obstacles.TopOf(cell);
+                if (float.IsNaN(top))
+                {
+                    continue;
+                }
+
+                // The ray comes down: it is highest where it enters the cell and lowest where it leaves.
+                var highest = Mathf.Lerp(origin.y, end.y, enter);
+                var lowest = Mathf.Lerp(origin.y, end.y, exit);
+                if (lowest < top - ObstacleRayMargin && highest >= floorHeight + ObstacleMinHeight)
+                {
+                    obstacles.AddMiss(cell);
+                }
             }
         }
 

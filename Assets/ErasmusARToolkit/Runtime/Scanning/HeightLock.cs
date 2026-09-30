@@ -31,9 +31,13 @@ namespace Erasmus.ARToolkit
         /// <summary>The plane agrees with a drawn height that is this close (meters) to it.</summary>
         public const float PlaneAgreement = 0.02f;
 
+        /// <summary>After the map moved, a change is followed at once for this many redraws.</summary>
+        public const int HurriedRedraws = 8;
+
         float agreedPlane;
         bool hasAgreed;
         int pending;
+        int hurried;
         bool moving;
 
         public bool HasValue { get; private set; }
@@ -73,6 +77,8 @@ namespace Erasmus.ARToolkit
             }
 
             var delta = target - Value;
+            var needed = hurried > 0 ? 1 : PendingRedraws;
+            hurried = Mathf.Max(hurried - 1, 0);
             if (!moving)
             {
                 if (Mathf.Abs(delta) <= DeadBand)
@@ -81,7 +87,7 @@ namespace Erasmus.ARToolkit
                     return false;
                 }
 
-                if (++pending < PendingRedraws)
+                if (++pending < needed)
                 {
                     return false;
                 }
@@ -98,6 +104,15 @@ namespace Erasmus.ARToolkit
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// ARCore corrected its map, and the surface moved with it. A measured height that leaves the
+        /// dead band in the next redraws is no noise: the drawn height follows without waiting.
+        /// </summary>
+        public void Hurry()
+        {
+            hurried = HurriedRedraws;
         }
 
         /// <summary>The surface starts over (its level merged into another one, or the scan was reset).</summary>

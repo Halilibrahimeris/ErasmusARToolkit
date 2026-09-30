@@ -24,6 +24,11 @@ namespace Erasmus.ARToolkit.Editor
         const string SurfaceShader = "Erasmus AR Toolkit/AR Surface";
         const string OccluderShader = "Erasmus AR Toolkit/Occluder";
         const string SurfaceDepthShader = "Erasmus AR Toolkit/Surface Depth";
+        const string ObstacleShader = "Erasmus AR Toolkit/Obstacle";
+
+        /// <summary>How see-through the boxes around obstacles are, and how strong their edges.</summary>
+        const float ObstacleFillAlpha = 0.18f;
+        const float ObstacleEdgeAlpha = 0.9f;
 
         const float PlaneEdgeWidth = 0.01f;
 
@@ -119,17 +124,59 @@ namespace Erasmus.ARToolkit.Editor
                 "ARToolkitOccluder", OccluderShader, RenderOrder.RoomOccluder);
             var surfaceDepth = GetOrKeepShaderMaterial(theme.SurfaceDepthMaterial, surfaceDepthShader,
                 "ARToolkitSurfaceDepth", SurfaceDepthShader, RenderOrder.SurfaceDepth);
+            var obstacleShader = Shader.Find(ObstacleShader);
+            var obstacle = GetOrKeepObstacleMaterial(theme.ObstacleMaterial, obstacleShader, "ARToolkitObstacle",
+                RenderOrder.ObstacleFill, theme.AccentColor, ObstacleFillAlpha, CullMode.Back);
+            var obstacleEdge = GetOrKeepObstacleMaterial(theme.ObstacleEdgeMaterial, obstacleShader,
+                "ARToolkitObstacleEdge", RenderOrder.ObstacleOutline, theme.AccentColor, ObstacleEdgeAlpha, CullMode.Off);
             if (theme.OccluderMaterial != occluder || theme.SurfaceDepthMaterial != surfaceDepth
-                || theme.OccluderShader != occluderShader || theme.SurfaceDepthShader != surfaceDepthShader)
+                || theme.OccluderShader != occluderShader || theme.SurfaceDepthShader != surfaceDepthShader
+                || theme.ObstacleMaterial != obstacle || theme.ObstacleEdgeMaterial != obstacleEdge
+                || theme.ObstacleShader != obstacleShader)
             {
                 theme.SetOccluderMaterial(occluder);
                 theme.SetSurfaceDepthMaterial(surfaceDepth);
                 theme.SetRoomScanShaders(occluderShader, surfaceDepthShader);
+                theme.SetObstacleAssets(obstacle, obstacleEdge, obstacleShader);
                 EditorUtility.SetDirty(theme);
                 AssetDatabase.SaveAssets();
             }
 
             return theme.HasRoomScanAssets;
+        }
+
+        /// <summary>
+        /// A material for the boxes around obstacles. A new one gets the accent color of the theme; one
+        /// that exists keeps the color it was given.
+        /// </summary>
+        static Material GetOrKeepObstacleMaterial(Material current, Shader shader, string name, int renderQueue,
+            Color color, float alpha, CullMode cull)
+        {
+            var isNew = (current == null || shader == null || current.shader != shader)
+                        && AssetDatabase.LoadAssetAtPath<Material>(MaterialsFolder + "/" + name + ".mat") == null;
+            var material = GetOrKeepShaderMaterial(current, shader, name, ObstacleShader, renderQueue);
+            if (material == null)
+            {
+                return null;
+            }
+
+            if (isNew)
+            {
+                material.SetColor("_BaseColor", new Color(color.r, color.g, color.b, alpha));
+            }
+
+            if (!Mathf.Approximately(material.GetFloat("_Cull"), (float)cull))
+            {
+                material.SetFloat("_Cull", (float)cull);
+                isNew = true;
+            }
+
+            if (isNew)
+            {
+                EditorUtility.SetDirty(material);
+            }
+
+            return material;
         }
 
         /// <summary>The theme's own material when it uses the shader (queue corrected), else the toolkit's.</summary>

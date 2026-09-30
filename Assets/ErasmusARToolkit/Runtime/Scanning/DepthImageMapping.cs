@@ -47,6 +47,68 @@ namespace Erasmus.ARToolkit
                 viewport.x * display.m01 + viewport.y * display.m11 + display.m21);
         }
 
+        /// <summary>
+        /// The viewport point for a texture UV: <see cref="ToTextureUv"/> the other way round. The point
+        /// lies outside of 0..1 for the parts of the camera image that are not on the screen (the image
+        /// is wider than the screen shows). False when the display matrix cannot be turned round.
+        /// </summary>
+        public bool TryGetViewport(Vector2 uv, Matrix4x4 display, out Vector2 viewport)
+        {
+            // uv = (a b; c d) * viewport + (e, f)
+            float a, b, c, d, e, f;
+            if (Transposed)
+            {
+                a = display.m00;
+                b = display.m01;
+                e = display.m02;
+                c = display.m10;
+                d = display.m11;
+                f = display.m12;
+            }
+            else
+            {
+                a = display.m00;
+                b = display.m10;
+                e = display.m20;
+                c = display.m01;
+                d = display.m11;
+                f = display.m21;
+            }
+
+            var determinant = a * d - b * c;
+            if (Mathf.Abs(determinant) < 1e-8f)
+            {
+                viewport = default;
+                return false;
+            }
+
+            var x = uv.x - e;
+            var y = uv.y - f;
+            viewport = new Vector2((d * x - b * y) / determinant, (a * y - c * x) / determinant);
+            return true;
+        }
+
+        /// <summary>
+        /// The part of the viewport the whole depth image covers: the screen (0..1) and what lies beside
+        /// it. False when the display matrix cannot be turned round.
+        /// </summary>
+        public bool TryGetImageBounds(Matrix4x4 display, out Rect bounds)
+        {
+            bounds = new Rect(0f, 0f, 1f, 1f);
+            if (!TryGetViewport(new Vector2(0f, 0f), display, out var a)
+                || !TryGetViewport(new Vector2(1f, 0f), display, out var b)
+                || !TryGetViewport(new Vector2(1f, 1f), display, out var c)
+                || !TryGetViewport(new Vector2(0f, 1f), display, out var d))
+            {
+                return false;
+            }
+
+            bounds = Rect.MinMaxRect(
+                Mathf.Min(Mathf.Min(a.x, b.x), Mathf.Min(c.x, d.x)), Mathf.Min(Mathf.Min(a.y, b.y), Mathf.Min(c.y, d.y)),
+                Mathf.Max(Mathf.Max(a.x, b.x), Mathf.Max(c.x, d.x)), Mathf.Max(Mathf.Max(a.y, b.y), Mathf.Max(c.y, d.y)));
+            return bounds.width > 1e-4f && bounds.height > 1e-4f;
+        }
+
         /// <summary>The depth image pixel for a viewport point. False when it falls outside the image.</summary>
         public bool TryGetPixel(Vector2 viewport, Matrix4x4 display, int width, int height, out int x, out int y)
         {

@@ -12,9 +12,10 @@ using Debug = UnityEngine.Debug;
 namespace Erasmus.ARToolkit
 {
     /// <summary>
-    /// Room scan frames from ARCore Depth: a grid of screen points is looked up in the raw depth image and
+    /// Room scan frames from ARCore Depth: a grid of points is looked up in the raw depth image and
     /// turned into points in space. Neighboring points give each point a normal, so table sides and walls
-    /// are not mistaken for table tops.
+    /// are not mistaken for table tops. The grid covers the whole depth image, also the parts beside the
+    /// screen (the camera sees more than the screen shows), so a scan covers the room faster.
     /// <para>
     /// The image is copied when the camera is about to draw: the camera then has the pose of the ARCore
     /// frame the image arrived with. The scan reads the copy when it takes its next frame.
@@ -42,9 +43,30 @@ namespace Erasmus.ARToolkit
             DepthTime,
         }
 
+        /// <summary>Points of the grid across the screen. Beside the screen the grid goes on at the same distance.</summary>
         public const int Columns = 56;
+
         public const int MaxRows = 104;
+
+        /// <summary>Most points a frame is sampled at.</summary>
+        public const int MaxSamples = 6400;
+
+        /// <summary>
+        /// The grid reaches this far (in screen widths or heights) beyond the screen at most: far from
+        /// the middle of the image depth is poor.
+        /// </summary>
+        public const float MaxBeyondScreen = 0.5f;
+
+        /// <summary>Points closer than this (meters) to their neighbors in the grid tell the scan nothing new.</summary>
+        public const float MinPointSpacing = 0.02f;
+
         public const byte MinConfidence = RoomSurfaceMap.MinConfidence;
+
+        static readonly Unity.Profiling.ProfilerMarker CopyMarker =
+            new Unity.Profiling.ProfilerMarker("Erasmus.RoomScan.CopyDepth");
+
+        static readonly Unity.Profiling.ProfilerMarker SampleMarker =
+            new Unity.Profiling.ProfilerMarker("Erasmus.RoomScan.SampleDepth");
 
         const int NormalStride = 2;
         const float MaxTangentPerMeter = 0.35f;
@@ -88,8 +110,14 @@ namespace Erasmus.ARToolkit
         byte[] sampleConfidences = Array.Empty<byte>();
         bool[] valid = Array.Empty<bool>();
         Vector3[] viewDirections = Array.Empty<Vector3>();
+        Vector3[] lastInColumn = Array.Empty<Vector3>();
+        bool[] hasLastInColumn = Array.Empty<bool>();
         Matrix4x4 directionsProjection;
+        Rect directionsBounds;
+        Rect sampleBounds = new Rect(0f, 0f, 1f, 1f);
+        int columns = Columns;
         int directionsRows;
+        int directionsColumns;
         Matrix4x4? displayMatrix;
         double lastTimestamp = double.NaN;
         long frameTimeNs;
@@ -136,6 +164,17 @@ namespace Erasmus.ARToolkit
 
         /// <summary>Time to copy a depth image and to turn it into points, in milliseconds.</summary>
         public float CaptureMs { get; private set; }
+
+        /// <summary>
+        /// Uses the parts of the depth image that lie beside the screen, too. On by default; off, the
+        /// scan sees what the screen shows.
+        /// </summary>
+        public bool UseWholeImage { get; set; } = true;
+
+        /// <summary>Points of the last frame before and after those that lay too close together were left out.</summary>
+        public int SampledPoints { get; private set; }
+
+        public int KeptPoints { get; private set; }
 
         public bool IsAvailable
         {
@@ -222,7 +261,11 @@ namespace Erasmus.ARToolkit
             }
 
             var started = Stopwatch.GetTimestamp();
-            Sample(frame);
+            using (SampleMarker.Auto())
+            {
+                Sample(frame);
+            }
+
             frame.Time = snapshot.FrameTime;
             frame.AllowCarving = check.State == MappingState.Verified;
             snapshot.Ready = false;
@@ -270,7 +313,11 @@ namespace Erasmus.ARToolkit
             }
 
             var started = Stopwatch.GetTimestamp();
-            Capture(pose, frameTime);
+            using (CopyMarker.Auto())
+            {
+                Capture(pose, frameTime);
+            }
+
             copyMs = Milliseconds(started);
         }
 
@@ -336,11 +383,38 @@ namespace Erasmus.ARToolkit
             captureRequested = !snapshot.Ready;
         }
 
+        /// <summary>
+        /// The grid of sample points: over the screen as before, and on beside it as far as the depth
+        /// image reaches, with the same distance between the points (fewer when there would be too many).
+        /// </summary>
+        internal static void LayOutGrid(Rect imageBounds, float screenAspect, out Rect bounds, out int gridColumns,
+            out int gridRows)
+        {
+            bounds = Rect.MinMaxRect(
+                Mathf.Max(Mathf.Min(imageBounds.xMin, 0f), -MaxBeyondScreen),
+                Mathf.Max(Mathf.Min(imageBounds.yMin, 0f), -MaxBeyondScreen),
+                Mathf.Min(Mathf.Max(imageBounds.xMax, 1f), 1f + MaxBeyondScreen),
+                Mathf.Min(Mathf.Max(imageBounds.yMax, 1f), 1f + MaxBeyondScreen));
+            var screenRows = Mathf.Clamp(Mathf.RoundToInt(Columns * screenAspect), 1, MaxRows);
+            var wide = Columns * bounds.width;
+            var high = screenRows * bounds.height;
+            var scale = Mathf.Min(1f, Mathf.Sqrt(MaxSamples / Mathf.Max(wide * high, 1f)));
+            gridColumns = Mathf.Max(1, Mathf.FloorToInt(wide * scale));
+            gridRows = Mathf.Max(1, Mathf.FloorToInt(high * scale));
+        }
+
         void Sample(ScanFrame frame)
         {
-            var rows = Mathf.Clamp(Mathf.RoundToInt(Columns * (float)camera.pixelHeight / Mathf.Max(1, camera.pixelWidth)),
-                1, MaxRows);
-            var count = Columns * rows;
+            var mapping = DepthImageMapping.Candidates[check.Best];
+            var imageBounds = new Rect(0f, 0f, 1f, 1f);
+            if (UseWholeImage)
+            {
+                mapping.TryGetImageBounds(snapshot.Display, out imageBounds);
+            }
+
+            LayOutGrid(imageBounds, (float)camera.pixelHeight / Mathf.Max(1, camera.pixelWidth), out sampleBounds,
+                out columns, out var rows);
+            var count = columns * rows;
             if (samples.Length < count)
             {
                 samples = new Vector3[count];
@@ -350,16 +424,15 @@ namespace Erasmus.ARToolkit
             }
 
             UpdateViewDirections(rows);
-            var mapping = DepthImageMapping.Candidates[check.Best];
             var origin = snapshot.Position;
             var rotation = snapshot.Rotation;
             var forward = rotation * Vector3.forward;
             for (var row = 0; row < rows; row++)
             {
-                for (var column = 0; column < Columns; column++)
+                for (var column = 0; column < columns; column++)
                 {
-                    var index = row * Columns + column;
-                    var viewport = new Vector2((column + 0.5f) / Columns, (row + 0.5f) / rows);
+                    var index = row * columns + column;
+                    var viewport = ViewportOf(column, row, rows);
                     valid[index] = false;
                     if (!mapping.TryGetPixel(viewport, snapshot.Display, snapshot.Width, snapshot.Height,
                             out var x, out var y))
@@ -385,17 +458,52 @@ namespace Erasmus.ARToolkit
 
             frame.Reset(origin, true);
             frame.Rotation = rotation;
+            if (lastInColumn.Length < columns)
+            {
+                lastInColumn = new Vector3[columns];
+                hasLastInColumn = new bool[columns];
+            }
+
+            Array.Clear(hasLastInColumn, 0, columns);
+            SampledPoints = 0;
+            var spacing = MinPointSpacing * MinPointSpacing;
             for (var row = 0; row < rows; row++)
             {
-                for (var column = 0; column < Columns; column++)
+                var hasLastInRow = false;
+                var lastInRow = Vector3.zero;
+                for (var column = 0; column < columns; column++)
                 {
-                    var index = row * Columns + column;
-                    if (valid[index])
+                    var index = row * columns + column;
+                    if (!valid[index])
                     {
-                        frame.Add(samples[index], FacesUp(column, row, rows, origin), sampleConfidences[index]);
+                        continue;
                     }
+
+                    // Close to the camera the points of the grid lie a few millimeters apart: the scan
+                    // works with cells of 5 cm, so most of them would only cost time.
+                    SampledPoints++;
+                    var point = samples[index];
+                    if (hasLastInRow && hasLastInColumn[column] && (point - lastInRow).sqrMagnitude < spacing
+                        && (point - lastInColumn[column]).sqrMagnitude < spacing)
+                    {
+                        continue;
+                    }
+
+                    frame.Add(point, FacesUp(column, row, rows, origin), sampleConfidences[index]);
+                    lastInRow = point;
+                    hasLastInRow = true;
+                    lastInColumn[column] = point;
+                    hasLastInColumn[column] = true;
                 }
             }
+
+            KeptPoints = frame.Count;
+        }
+
+        Vector2 ViewportOf(int column, int row, int rows)
+        {
+            return new Vector2(sampleBounds.xMin + (column + 0.5f) / columns * sampleBounds.width,
+                sampleBounds.yMin + (row + 0.5f) / rows * sampleBounds.height);
         }
 
         /// <summary>
@@ -405,34 +513,36 @@ namespace Erasmus.ARToolkit
         void UpdateViewDirections(int rows)
         {
             var projection = snapshot.Projection;
-            if (rows == directionsRows && projection == directionsProjection && viewDirections.Length >= Columns * rows)
+            if (rows == directionsRows && columns == directionsColumns && sampleBounds == directionsBounds
+                && projection == directionsProjection && viewDirections.Length >= columns * rows)
             {
                 return;
             }
 
-            if (viewDirections.Length < Columns * rows)
+            if (viewDirections.Length < columns * rows)
             {
-                viewDirections = new Vector3[Columns * rows];
+                viewDirections = new Vector3[columns * rows];
             }
 
             var inverse = projection.inverse;
             for (var row = 0; row < rows; row++)
             {
-                for (var column = 0; column < Columns; column++)
+                for (var column = 0; column < columns; column++)
                 {
-                    var viewport = new Vector2((column + 0.5f) / Columns, (row + 0.5f) / rows);
-                    viewDirections[row * Columns + column] = DepthGeometry.ViewDirection(inverse, viewport);
+                    viewDirections[row * columns + column] = DepthGeometry.ViewDirection(inverse, ViewportOf(column, row, rows));
                 }
             }
 
             directionsRows = rows;
+            directionsColumns = columns;
+            directionsBounds = sampleBounds;
             directionsProjection = projection;
         }
 
         /// <summary>Normal from the neighbors a few samples away in both directions.</summary>
         bool FacesUp(int column, int row, int rows, Vector3 origin)
         {
-            var center = samples[row * Columns + column];
+            var center = samples[row * columns + column];
             var maxLength = MaxTangentPerMeter * Vector3.Distance(origin, center);
             return TryTangent(column, row, 1, 0, rows, maxLength, out var alongRow)
                    && TryTangent(column, row, 0, 1, rows, maxLength, out var alongColumn)
@@ -442,7 +552,7 @@ namespace Erasmus.ARToolkit
         bool TryTangent(int column, int row, int stepColumn, int stepRow, int rows, float maxLength, out Vector3 tangent)
         {
             tangent = default;
-            var index = row * Columns + column;
+            var index = row * columns + column;
             var center = samples[index];
             var depth = sampleDepths[index];
             var hasAfter = TryGetSample(column + stepColumn * NormalStride, row + stepRow * NormalStride, rows, depth,
@@ -471,12 +581,12 @@ namespace Erasmus.ARToolkit
         bool TryGetSample(int column, int row, int rows, float depth, out Vector3 point)
         {
             point = default;
-            if (column < 0 || row < 0 || column >= Columns || row >= rows)
+            if (column < 0 || row < 0 || column >= columns || row >= rows)
             {
                 return false;
             }
 
-            var index = row * Columns + column;
+            var index = row * columns + column;
             if (!valid[index]
                 || Mathf.Abs(sampleDepths[index] - depth) > Mathf.Max(MaxDepthStep, MaxDepthStepPerMeter * depth))
             {

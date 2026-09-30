@@ -118,8 +118,23 @@ namespace Erasmus.ARToolkit
 
                 return roomScanner != null && roomScanner.HasModel
                     ? roomScanner.Progress.SurfaceCount
-                    : planeManager.trackables.count;
+                    : CountHorizontalPlanes();
             }
+        }
+
+        /// <summary>Planes to place things on: walls do not count.</summary>
+        int CountHorizontalPlanes()
+        {
+            var count = 0;
+            foreach (var plane in planeManager.trackables)
+            {
+                if (plane.alignment.IsHorizontal())
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         bool IsScanning => Mode == ToolkitMode.AR && roomScanner != null && roomScanner.IsScanning;
@@ -239,6 +254,12 @@ namespace Erasmus.ARToolkit
             }
 
             planeSurfaces.SetVisible(PlanesVisible);
+            planeSurfaces.SetGridCellSize(config.GridCellSize);
+
+            // Vertical planes are the walls of the room scan. Objects are placed on horizontal ones only.
+            planeManager.requestedDetectionMode = config.DetectWalls
+                ? PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical
+                : PlaneDetectionMode.Horizontal;
         }
 
         /// <summary>Room scan mode (<see cref="RoomScanner"/>). Scenes made by older toolkit versions may not have one.</summary>
@@ -256,6 +277,8 @@ namespace Erasmus.ARToolkit
             }
 
             roomScanner.Initialize(arCamera, theme);
+            roomScanner.GridCellSize = config.GridCellSize;
+            roomScanner.DetectWalls = config.DetectWalls;
             roomScanner.SetVisible(PlanesVisible);
             roomScanner.ScanningChanged += OnScanningChanged;
         }

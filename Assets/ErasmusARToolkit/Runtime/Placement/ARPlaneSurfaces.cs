@@ -23,6 +23,10 @@ namespace Erasmus.ARToolkit
         static readonly int StencilBitId = Shader.PropertyToID("_StencilBit");
         static readonly int StencilCompId = Shader.PropertyToID("_StencilComp");
         static readonly int StencilPassId = Shader.PropertyToID("_StencilPass");
+        static readonly int BaseMapTilingId = Shader.PropertyToID("_BaseMap_ST");
+
+        /// <summary>Distance between the grid lines (meters) the plane materials are made for.</summary>
+        const float MaterialGridCellSize = 0.25f;
 
         readonly PlaneGrouping grouping = new PlaneGrouping();
         readonly List<ARPlane> planes = new List<ARPlane>();
@@ -36,6 +40,8 @@ namespace Erasmus.ARToolkit
         ARPlaneManager planeManager;
         Material baseFill;
         Material baseEdge;
+        MaterialPropertyBlock tiling;
+        float gridCellSize = MaterialGridCellSize;
         bool visible = true;
         bool suppressed;
         bool dirty;
@@ -88,6 +94,43 @@ namespace Erasmus.ARToolkit
         }
 
         /// <summary>
+        /// Distance between the grid lines on the planes, in meters. The plane material itself is made
+        /// for 0.25 m and is not changed: other distances are set per plane.
+        /// </summary>
+        public void SetGridCellSize(float meters)
+        {
+            gridCellSize = Mathf.Clamp(meters, 0.1f, 1f);
+            if (planeManager == null)
+            {
+                return;
+            }
+
+            foreach (var plane in planeManager.trackables)
+            {
+                ApplyGridCellSize(plane);
+            }
+        }
+
+        void ApplyGridCellSize(ARPlane plane)
+        {
+            var meshRenderer = plane.GetComponent<MeshRenderer>();
+            if (meshRenderer == null)
+            {
+                return;
+            }
+
+            if (Mathf.Approximately(gridCellSize, MaterialGridCellSize))
+            {
+                meshRenderer.SetPropertyBlock(null);
+                return;
+            }
+
+            tiling ??= new MaterialPropertyBlock();
+            tiling.SetVector(BaseMapTilingId, new Vector4(1f / gridCellSize, 1f / gridCellSize, 0f, 0f));
+            meshRenderer.SetPropertyBlock(tiling);
+        }
+
+        /// <summary>
         /// Hides the planes while the room scan draws its own surfaces (see <see cref="RoomScanner"/>),
         /// whatever <see cref="Visible"/> says. They keep tracking and still feed the scan.
         /// </summary>
@@ -122,6 +165,16 @@ namespace Erasmus.ARToolkit
             {
                 ShowOnlyWhileTracked(plane);
                 ApplyVisibility(plane);
+                ApplyGridCellSize(plane);
+            }
+
+            foreach (var plane in changes.updated)
+            {
+                // ARCore may change its mind about what a plane is.
+                if (!plane.alignment.IsHorizontal())
+                {
+                    ApplyVisibility(plane);
+                }
             }
 
             dirty = true;
@@ -184,7 +237,9 @@ namespace Erasmus.ARToolkit
         void ApplyVisibility(ARPlane plane)
         {
             // forceRenderingOff, not enabled: ARPlaneMeshVisualizer sets enabled every frame.
-            var hidden = !visible || suppressed;
+            // Vertical planes are never drawn: the grid is laid out for floors and would show as streaks
+            // on a wall. The room scan draws the walls it makes of them.
+            var hidden = !visible || suppressed || !plane.alignment.IsHorizontal();
             var meshRenderer = plane.GetComponent<MeshRenderer>();
             if (meshRenderer != null)
             {

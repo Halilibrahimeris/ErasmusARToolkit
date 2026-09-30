@@ -33,6 +33,11 @@ namespace Erasmus.ARToolkit
         [SerializeField, Tooltip("Shows what the room scan measures (depth mapping, floor height, timings) on the " +
                                  "HUD while scanning. The same line is always written to the log.")]
         bool showScanDiagnostics;
+        [SerializeField, Range(0.1f, 1f), Tooltip("Distance between the grid lines on floors and tables, in meters.")]
+        float gridCellSize = 0.25f;
+        [SerializeField, Tooltip("The room scan looks for the walls of the room and shows them. ARCore detects " +
+                                 "vertical planes for that, which costs a little speed.")]
+        bool detectWalls = true;
 
         [Header("Camera")]
         [SerializeField, Tooltip("When real AR is not available (PC, Editor, phones without ARCore), show the " +
@@ -55,6 +60,12 @@ namespace Erasmus.ARToolkit
         public bool RealWorldOcclusion => realWorldOcclusion;
         public ModeOverride ModeOverride => modeOverride;
         public bool ShowScanDiagnostics => showScanDiagnostics;
+
+        /// <summary>Distance between the grid lines on floors and tables, in meters.</summary>
+        public float GridCellSize => Mathf.Clamp(gridCellSize, 0.1f, 1f);
+
+        /// <summary>The room scan looks for the walls of the room.</summary>
+        public bool DetectWalls => detectWalls;
         public bool UseDeviceCamera => useDeviceCamera;
         public string PreferredCameraName => preferredCameraName ?? string.Empty;
         public bool DesktopSimulateImageTargets => desktopSimulateImageTargets;

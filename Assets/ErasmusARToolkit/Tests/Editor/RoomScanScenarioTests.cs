@@ -148,6 +148,22 @@ namespace Erasmus.ARToolkit.Tests
             return pieces;
         }
 
+        /// <summary>
+        /// Cells of the floor that are not drawn although nothing stands there: holes. Under the desk and
+        /// the chair, and one step around them, the floor is not drawn on purpose.
+        /// </summary>
+        static int CountHoles(SurfaceLevel floor, Rect area)
+        {
+            const float around = 0.15f;
+            var desk = Rect.MinMaxRect(0f - around, 0f - around, 1.6f + around, 0.7f + around);
+            var chair = Rect.MinMaxRect(1.9f - around, 0.1f - around, 2.3f + around, 0.5f + around);
+            return CountCells(floor, area, cell =>
+            {
+                var center = new Vector2((cell.x + 0.5f) * RoomSurfaceMap.CellSize, (cell.y + 0.5f) * RoomSurfaceMap.CellSize);
+                return !floor.IsShown(cell) && !desk.Contains(center) && !chair.Contains(center);
+            });
+        }
+
         static void AssertNothingUsableBelow(RoomSurfaceMap map, float floorHeight)
         {
             foreach (var level in map.Levels)
@@ -204,8 +220,7 @@ namespace Erasmus.ARToolkit.Tests
             var floor = map.Floor.Level;
             Assert.AreEqual(0f, floor.Height, 0.01f);
             AssertNothingUsableBelow(map, 0f);
-            var holes = CountCells(floor, FloorPlane, cell => !floor.IsShown(cell));
-            Assert.AreEqual(0, holes, "Cells of the floor that are not drawn.");
+            Assert.AreEqual(0, CountHoles(floor, FloorPlane), "Cells of the floor that are not drawn.");
             var carved = CountCells(floor, FloorPlane, cell => floor.GetState(cell) == CellState.Carved);
             Assert.AreEqual(0, carved, "Cells of the floor the scan believes to be holes.");
 
@@ -277,8 +292,7 @@ namespace Erasmus.ARToolkit.Tests
             Assert.AreEqual(0f, floor.Height, 0.03f);
             var carved = CountCells(floor, FloorPlane, cell => floor.GetState(cell) == CellState.Carved);
             Assert.AreEqual(0, carved);
-            var holes = CountCells(floor, FloorPlane, cell => !floor.IsShown(cell));
-            Assert.AreEqual(0, holes);
+            Assert.AreEqual(0, CountHoles(floor, FloorPlane));
             AssertNothingUsableBelow(map, 0f);
         }
 
@@ -415,6 +429,430 @@ namespace Erasmus.ARToolkit.Tests
                 Assert.AreEqual(coarseLevels[i].ShownArea, fineLevels[i].ShownArea,
                     0.1f * Mathf.Max(coarseLevels[i].ShownArea, 0.5f), $"Area at {coarseLevels[i].Height:0.00}");
             }
+        }
+
+        /// <summary>A chair as depth sees it: four thin legs, a seat and a back.</summary>
+        static int[] AddChair(RoomSimulator room, Vector3 corner)
+        {
+            const float leg = 0.03f;
+            const float side = 0.4f;
+            var parts = new List<int>();
+            foreach (var x in new[] { 0f, side - leg })
+            {
+                foreach (var z in new[] { 0f, side - leg })
+                {
+                    parts.Add(room.AddBox(corner + new Vector3(x, 0f, z), corner + new Vector3(x + leg, 0.42f, z + leg)));
+                }
+            }
+
+            parts.Add(room.AddBox(corner + new Vector3(0f, 0.42f, 0f), corner + new Vector3(side, 0.45f, side)));
+            parts.Add(room.AddBox(corner + new Vector3(0f, 0.45f, side - leg), corner + new Vector3(side, 0.9f, side)));
+            return parts.ToArray();
+        }
+
+        // Around a chair that stands at (1.9 .. 2.3, 0.1 .. 0.5).
+        static readonly Vector3[,] AroundTheChair =
+        {
+            { new Vector3(2.1f, 1.4f, -1.2f), new Vector3(2.1f, 0.2f, 0.3f) },
+            { new Vector3(3.4f, 1.4f, 0.3f), new Vector3(2.1f, 0.2f, 0.3f) },
+            { new Vector3(2.1f, 1.4f, 1.8f), new Vector3(2.1f, 0.2f, 0.3f) },
+            { new Vector3(0.8f, 1.4f, 0.3f), new Vector3(2.1f, 0.2f, 0.3f) },
+            { new Vector3(3.0f, 1.5f, -0.9f), new Vector3(2.1f, 0.1f, 0.3f) },
+            { new Vector3(1.2f, 1.5f, -0.9f), new Vector3(2.1f, 0.1f, 0.3f) },
+        };
+
+        static readonly Rect ChairFloor = Rect.MinMaxRect(1.9f, 0.1f, 2.3f, 0.5f);
+
+        static RoomSurfaceMap MapWithAFloor()
+        {
+            var map = new RoomSurfaceMap();
+            map.AddPrior(0f, RoomSurfaceMapTests.Polygon(FloorPlane));
+            return map;
+        }
+
+        static ObstacleVolume? BoxAt(RoomSurfaceMap map, Vector3 point)
+        {
+            foreach (var volume in map.Volumes)
+            {
+                if (volume.ContainsXZ(point))
+                {
+                    return volume;
+                }
+            }
+
+            return null;
+        }
+
+        [Test]
+        public void ThinLegChair_BlocksTheFloorUnderIt()
+        {
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 });
+            AddChair(room, new Vector3(1.9f, 0f, 0.1f));
+            var map = MapWithAFloor();
+
+            Scan(map, room, AroundTheChair, 6);
+            RoomSurfaceMapTests.ShowAll(map);
+
+            Assert.AreEqual(FloorState.Trusted, map.FloorState);
+            var floor = map.Floor.Level;
+            var drawnUnderIt = CountCells(floor, ChairFloor, floor.IsShown);
+            Assert.AreEqual(0, drawnUnderIt, "The floor grid is drawn under the chair.");
+            Assert.IsTrue(floor.IsShown(RoomSurfaceMap.CellOf(2.1f, -0.4f)), "The floor in front of the chair is free.");
+            Assert.IsTrue(floor.IsShown(RoomSurfaceMap.CellOf(1.4f, 0.3f)));
+
+            var box = BoxAt(map, new Vector3(2.1f, 0f, 0.3f));
+            Assert.IsTrue(box.HasValue, "The chair has a box around it.");
+            Assert.GreaterOrEqual(box.Value.Size.y, 0.4f);
+            Assert.LessOrEqual(box.Value.Size.x, 0.65f);
+            Assert.LessOrEqual(box.Value.Size.z, 0.65f);
+            Assert.AreEqual(0f, box.Value.Pose.position.y, 0.01f);
+            Assert.AreEqual(1, map.Volumes.Count);
+            AssertNothingUsableBelow(map, 0f);
+        }
+
+        [Test]
+        public void MovedChair_FreesTheFloor()
+        {
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 });
+            var chair = AddChair(room, new Vector3(1.9f, 0f, 0.1f));
+            var map = MapWithAFloor();
+            Scan(map, room, AroundTheChair, 6);
+            RoomSurfaceMapTests.ShowAll(map);
+            Assert.AreEqual(1, map.Volumes.Count);
+
+            // Someone takes the chair out of the room.
+            for (var i = chair.Length - 1; i >= 0; i--)
+            {
+                room.RemoveBox(chair[i]);
+            }
+
+            Scan(map, room, AroundTheChair, 3);
+            RoomSurfaceMapTests.ShowAll(map);
+
+            var floor = map.Floor.Level;
+            Assert.AreEqual(0, map.Obstacles.BlockedCount);
+            Assert.AreEqual(0, map.Volumes.Count, "The box goes with the chair.");
+            var missing = CountCells(floor, ChairFloor, cell => !floor.IsShown(cell));
+            Assert.AreEqual(0, missing, "The floor where the chair stood is drawn again.");
+            foreach (var level in map.Levels)
+            {
+                Assert.IsTrue(level.IsFloor || level.ShownArea <= 0f, $"The seat at {level.Height:0.00} is gone.");
+            }
+        }
+
+        [Test]
+        public void PersonWalkingThrough_LeavesNoObstacle()
+        {
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 });
+            var map = MapWithAFloor();
+            Scan(map, room, AroundTheChair, 3);
+            Assert.AreEqual(FloorState.Trusted, map.FloorState);
+
+            // Someone walks through the view: at each spot for a quarter of a second.
+            var frame = new ScanFrame();
+            for (var step = 0; step < 8; step++)
+            {
+                var x = 1.2f + 0.25f * step;
+                var person = room.AddBox(new Vector3(x, 0f, 0.1f), new Vector3(x + 0.4f, 1.7f, 0.4f));
+                for (var repeat = 0; repeat < 2; repeat++)
+                {
+                    room.Capture(AroundTheChair[0, 0], AroundTheChair[0, 1], frame);
+                    map.Integrate(frame);
+                }
+
+                room.RemoveBox(person);
+            }
+
+            Scan(map, room, AroundTheChair, 2);
+            RoomSurfaceMapTests.ShowAll(map);
+
+            Assert.AreEqual(0, map.Obstacles.BlockedCount);
+            Assert.AreEqual(0, map.Volumes.Count);
+            var floor = map.Floor.Level;
+            var missing = CountCells(floor, Rect.MinMaxRect(1.2f, 0.1f, 3.3f, 0.4f), cell => !floor.IsShown(cell));
+            Assert.AreEqual(0, missing);
+        }
+
+        [Test]
+        public void BagOnTheFloor_IsAnOtherVolume()
+        {
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 });
+            room.AddBox(new Vector3(1.9f, 0f, 0.1f), new Vector3(2.3f, 0.2f, 0.4f));
+            var map = MapWithAFloor();
+
+            Scan(map, room, AroundTheChair, 6);
+            RoomSurfaceMapTests.ShowAll(map);
+
+            Assert.AreEqual(1, map.Volumes.Count);
+            var bag = map.Volumes[0];
+            Assert.AreEqual(ObstacleKind.Other, bag.Kind);
+            Assert.AreEqual(0.2f, bag.Size.y, 0.03f);
+
+            // A box is a little larger than what is in it: depth is noisy at the edges of things.
+            Assert.AreEqual(0.4f, bag.Size.x, 0.16f);
+            Assert.AreEqual(0.3f, bag.Size.z, 0.16f);
+            Assert.GreaterOrEqual(bag.Size.x, 0.4f);
+            Assert.GreaterOrEqual(bag.Size.z, 0.3f);
+            Assert.IsTrue(bag.ContainsXZ(new Vector3(2.1f, 0f, 0.25f)));
+        }
+
+        [Test]
+        public void ChairUnderDesk_FloorIsNotFilled()
+        {
+            var room = Classroom(new SimulationOptions { Columns = 80, Rows = 80 });
+            var map = MapWithPlanes();
+
+            Scan(map, room, Walk, 5);
+            RoomSurfaceMapTests.ShowAll(map);
+
+            Assert.AreEqual(FloorState.Trusted, map.FloorState);
+            var floor = map.Floor.Level;
+
+            // The chair stands beside the desk: the floor between and under them is not drawn.
+            var underTheChair = CountCells(floor, Rect.MinMaxRect(1.95f, 0.15f, 2.25f, 0.45f), floor.IsShown);
+            Assert.AreEqual(0, underTheChair);
+            Assert.IsTrue(floor.IsShown(RoomSurfaceMap.CellOf(2.8f, -0.8f)));
+
+            var desk = BoxAt(map, new Vector3(0.8f, 0f, 0.35f));
+            Assert.IsTrue(desk.HasValue);
+            Assert.AreEqual(ObstacleKind.Table, desk.Value.Kind);
+            Assert.AreEqual(DeskHeight, desk.Value.Size.y, 0.03f);
+            var chair = BoxAt(map, new Vector3(2.1f, 0f, 0.3f));
+            Assert.IsTrue(chair.HasValue);
+            Assert.AreNotEqual(desk.Value.Id, chair.Value.Id, "The desk and the chair beside it are two things.");
+        }
+
+        [Test]
+        public void BackrestTopAtDeskHeight_DoesNotJoinDeskAndChair()
+        {
+            // A chair pushed up to the desk; the top of its back is as high as the desk and 3 cm wide.
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 });
+            room.AddBox(new Vector3(0f, 0f, 0f), new Vector3(1.6f, DeskHeight, 0.7f));
+            room.AddBox(new Vector3(0.6f, 0f, -0.5f), new Vector3(1.0f, 0.45f, -0.1f));
+            room.AddBox(new Vector3(0.6f, 0.45f, -0.5f), new Vector3(1.0f, DeskHeight, -0.47f));
+            var map = MapWithAFloor();
+            var builder = new RoomModelBuilder();
+            Vector3[,] poses =
+            {
+                { new Vector3(0.8f, 1.5f, -1.6f), new Vector3(0.8f, 0.5f, 0f) },
+                { new Vector3(2.4f, 1.5f, -1.2f), new Vector3(0.8f, 0.5f, 0f) },
+                { new Vector3(-0.8f, 1.5f, -1.2f), new Vector3(0.8f, 0.5f, 0f) },
+                { new Vector3(0.8f, 1.6f, -0.9f), new Vector3(0.8f, 0.6f, 0.2f) },
+                { new Vector3(1.6f, 1.6f, -1.4f), new Vector3(0.8f, 0.4f, -0.2f) },
+                { new Vector3(0f, 1.6f, -1.4f), new Vector3(0.8f, 0.4f, -0.2f) },
+            };
+
+            Scan(map, room, poses, 5);
+            RoomSurfaceMapTests.ShowAll(map, builder);
+
+            var desk = LevelNear(map, DeskHeight);
+            Assert.AreEqual(DeskHeight, desk.Height, 0.015f);
+            Assert.AreEqual(1.6f * 0.7f, desk.ShownArea, 1.6f * 0.7f * 0.15f);
+            var onTheBackrest = CountCells(desk, Rect.MinMaxRect(0.6f, -0.5f, 1.0f, -0.4f), desk.IsShown);
+            Assert.AreEqual(0, onTheBackrest, "The top of the back of a chair is no surface to put things on.");
+            var shape = builder.ShapeOf(desk.Id);
+            Assert.IsNotNull(shape);
+            Assert.AreEqual(1, shape.Loops.Count, "One desk.");
+            Assert.AreEqual(4, shape.Loops[0].Count, "A desk has four corners.");
+        }
+
+        [Test]
+        public void FragmentedFloorBetweenDesks_KeepsItsAisles()
+        {
+            // Two rows of desks with an aisle of 60 cm between them. ARCore has no plane for the floor:
+            // depth finds it, in pieces between the furniture.
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 });
+            room.AddBox(new Vector3(0f, 0f, 0f), new Vector3(1.6f, DeskHeight, 0.7f));
+            room.AddBox(new Vector3(0f, 0f, 1.3f), new Vector3(1.6f, DeskHeight, 2.0f));
+            var map = new RoomSurfaceMap();
+            Vector3[,] poses =
+            {
+                { new Vector3(-1.2f, 1.5f, 1.0f), new Vector3(0.8f, 0f, 1.0f) },
+                { new Vector3(2.8f, 1.5f, 1.0f), new Vector3(0.8f, 0f, 1.0f) },
+                { new Vector3(-1.4f, 1.5f, 0.2f), new Vector3(0.2f, 0f, 1.0f) },
+                { new Vector3(3.0f, 1.5f, 1.8f), new Vector3(1.4f, 0f, 1.0f) },
+                { new Vector3(-1.5f, 1.4f, -0.8f), new Vector3(-0.8f, 0f, 1.0f) },
+                { new Vector3(3.1f, 1.4f, -0.8f), new Vector3(2.4f, 0f, 1.0f) },
+                { new Vector3(0.8f, 1.6f, -1.5f), new Vector3(0.8f, 0f, -0.6f) },
+                { new Vector3(0.8f, 1.6f, 3.5f), new Vector3(0.8f, 0f, 2.6f) },
+            };
+
+            Scan(map, room, poses, 5);
+            RoomSurfaceMapTests.ShowAll(map);
+
+            Assert.AreNotEqual(FloorState.Unknown, map.FloorState);
+            var floor = map.Floor.Level;
+            Assert.AreEqual(0f, floor.Height, 0.015f);
+            var aisle = Rect.MinMaxRect(0.2f, 0.85f, 1.4f, 1.15f);
+            var drawn = CountCells(floor, aisle, floor.IsShown);
+            var all = CountCells(floor, aisle, cell => true);
+            Assert.GreaterOrEqual(drawn, all * 0.9f, "The aisle between the desks is floor to walk on.");
+            Assert.AreEqual(0, CountCells(floor, Rect.MinMaxRect(0.2f, 0.15f, 1.4f, 0.55f), floor.IsShown),
+                "No floor is drawn under the desks.");
+        }
+
+        [Test]
+        public void TurnedRoom_IsDrawnAlongItsWalls()
+        {
+            // The scan was started while the user looked 20 degrees past the walls: the room stands
+            // turned in the space of the scan.
+            var turn = Matrix4x4.Rotate(Quaternion.Euler(0f, 20f, 0f));
+            var room = Classroom(new SimulationOptions { Columns = 80, Rows = 80 });
+            var map = new RoomSurfaceMap();
+            var builder = new RoomModelBuilder();
+            var floorCorners = new List<Vector2>();
+            foreach (var corner in RoomSurfaceMapTests.Polygon(FloorPlane))
+            {
+                var turned = turn.MultiplyPoint3x4(new Vector3(corner.x, 0f, corner.y));
+                floorCorners.Add(new Vector2(turned.x, turned.z));
+            }
+
+            map.AddPrior(0f, floorCorners);
+            var frame = new ScanFrame();
+            for (var pose = 0; pose < Walk.GetLength(0); pose++)
+            {
+                for (var repeat = 0; repeat < 4; repeat++)
+                {
+                    room.Capture(Walk[pose, 0], Walk[pose, 1], frame);
+                    frame.Transform(turn);
+                    map.Integrate(frame);
+                    RoomSurfaceMapTests.ShowAll(map, builder);
+                }
+            }
+
+            Assert.AreEqual(FloorState.Trusted, map.FloorState);
+            Assert.AreEqual(20f, builder.RoomYaw, 1.5f, "The walls give the direction.");
+            var desk = LevelNear(map, DeskHeight);
+            var shape = builder.ShapeOf(desk.Id);
+            Assert.AreEqual(1, shape.Loops.Count);
+            Assert.AreEqual(4, shape.Loops[0].Count, "A desk has four corners.");
+            for (var i = 0; i < 4; i++)
+            {
+                var edge = shape.Loops[0][(i + 1) % 4] - shape.Loops[0][i];
+                Assert.AreEqual(0f, RoomAxes.Difference(RoomAxes.YawOf(edge), builder.RoomYaw), 1.1f);
+            }
+
+            Assert.AreEqual(1.6f * 0.7f, desk.ShownArea, 1.6f * 0.7f * 0.15f);
+            var deskCenter = turn.MultiplyPoint3x4(new Vector3(0.8f, 0f, 0.35f));
+            var box = BoxAt(map, deskCenter);
+            Assert.IsTrue(box.HasValue);
+            Assert.AreEqual(ObstacleKind.Table, box.Value.Kind);
+            Assert.AreEqual(0f, RoomAxes.Difference(box.Value.Pose.rotation.eulerAngles.y, builder.RoomYaw), 0.5f,
+                "The box around the desk stands along the walls, too.");
+        }
+
+        [Test]
+        public void RoomWithWalls_FloorEndsAtTheWalls()
+        {
+            // Plain walls: ARCore detects no planes on them, but depth sees them. The plane of the floor
+            // reaches through the walls, as the planes of ARCore do.
+            var room = new RoomSimulator(new SimulationOptions { Columns = 80, Rows = 80 })
+            {
+                Walls = Rect.MinMaxRect(-1f, -2f, 3f, 1.6f),
+            };
+            var map = MapWithAFloor();
+            var builder = new RoomModelBuilder();
+            Vector3[,] poses =
+            {
+                { new Vector3(1f, 1.4f, -0.8f), new Vector3(1f, 0f, 0.4f) },
+                { new Vector3(1.4f, 1.4f, -0.6f), new Vector3(0.4f, 0f, 0.6f) },
+                { new Vector3(0.6f, 1.4f, -0.6f), new Vector3(1.6f, 0f, 0.6f) },
+                { new Vector3(1f, 1.4f, -0.4f), new Vector3(1f, 0.9f, 1.6f) },
+                { new Vector3(1.6f, 1.4f, -0.2f), new Vector3(0f, 0.9f, 1.6f) },
+                { new Vector3(0.4f, 1.4f, -0.2f), new Vector3(2f, 0.9f, 1.6f) },
+                { new Vector3(1.2f, 1.5f, 0f), new Vector3(1f, 0.6f, 1.6f) },
+                { new Vector3(0.8f, 1.5f, 0f), new Vector3(1f, 0.6f, 1.6f) },
+            };
+            var frame = new ScanFrame();
+            for (var round = 0; round < 2; round++)
+            {
+                for (var pose = 0; pose < poses.GetLength(0); pose++)
+                {
+                    for (var repeat = 0; repeat < 3; repeat++)
+                    {
+                        room.Capture(poses[pose, 0], poses[pose, 1], frame);
+                        map.Integrate(frame);
+                    }
+
+                    RoomSurfaceMapTests.ShowAll(map, builder);
+                }
+            }
+
+            Assert.AreEqual(FloorState.Trusted, map.FloorState);
+            Assert.GreaterOrEqual(map.Walls.Segments.Count, 1, "The wall the camera looked at.");
+            WallSegment? far = null;
+            foreach (var wall in map.Walls.Segments)
+            {
+                if (wall.DistanceTo(new Vector2(1f, 1.6f)) < 0.1f)
+                {
+                    far = wall;
+                }
+            }
+
+            Assert.IsTrue(far.HasValue, "A wall where the wall is.");
+            Assert.GreaterOrEqual(far.Value.Length, 1.5f);
+            Assert.IsFalse(far.Value.FromPlane);
+            Assert.AreEqual(0f, RoomAxes.Difference(RoomAxes.YawOf(far.Value.B - far.Value.A), 0f), 2f);
+            Assert.AreEqual(0f, far.Value.Bottom, 0.02f);
+
+            var floor = map.Floor.Level;
+            Assert.IsTrue(floor.IsShown(RoomSurfaceMap.CellOf(1f, 0.8f)));
+            var behind = CountCells(floor, Rect.MinMaxRect(0.2f, 1.7f, 1.8f, 2.15f), floor.IsShown);
+            Assert.AreEqual(0, behind, "The floor ends at the wall.");
+            foreach (var volume in map.Volumes)
+            {
+                // Of the walls at the sides the camera saw the ends only: too short to be called walls.
+                Assert.LessOrEqual(Mathf.Min(volume.Size.x, volume.Size.z), 0.25f,
+                    $"Nothing but walls stands in this room, and {volume.Kind} {volume.Id} is {volume.Size} large.");
+            }
+
+            var through = new Ray(new Vector3(1f, 1.4f, 0f), (new Vector3(1f, 0f, 2f) - new Vector3(1f, 1.4f, 0f)).normalized);
+            Assert.IsFalse(map.Raycast(through, 10f, out _));
+        }
+
+        [Test]
+        public void MapMovedThreeCentimeters_TheFloorFollowsSooner()
+        {
+            var waited = FramesUntilTheFloorFollows(false);
+            var hurried = FramesUntilTheFloorFollows(true);
+
+            Assert.Less(waited, 60, "The floor follows what depth sees in any case.");
+            Assert.Less(hurried, waited);
+            Assert.LessOrEqual(hurried, 12, "A second and a half of scanning.");
+        }
+
+        /// <summary>
+        /// The scan moved with its anchor, the room did not: the floor lies 3 cm lower in the scan than
+        /// before. Frames until the scan has its floor there.
+        /// </summary>
+        static int FramesUntilTheFloorFollows(bool mapMoveIsNoted)
+        {
+            var room = new RoomSimulator(new SimulationOptions { Columns = 60, Rows = 60 });
+            var map = new RoomSurfaceMap();
+            Scan(map, room, Walk, 4);
+            Assert.AreEqual(FloorState.Trusted, map.FloorState);
+            Assert.AreEqual(0f, map.Floor.Level.Height, 0.01f);
+
+            room.FloorHeight = -0.03f;
+            if (mapMoveIsNoted)
+            {
+                map.NoteMapMoved();
+            }
+
+            var frame = new ScanFrame();
+            for (var frames = 1; frames <= 60; frames++)
+            {
+                var pose = frames % Walk.GetLength(0);
+                room.Capture(Walk[pose, 0], Walk[pose, 1], frame);
+                map.Integrate(frame);
+                if (map.Floor.Level.Height < -0.02f)
+                {
+                    Assert.AreEqual(FloorState.Trusted, map.FloorState);
+                    return frames;
+                }
+            }
+
+            return 60;
         }
 
         static RoomSurfaceMap ScanWith(int columns, int rows)

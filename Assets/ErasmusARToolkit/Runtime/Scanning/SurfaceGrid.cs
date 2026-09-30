@@ -15,6 +15,9 @@ namespace Erasmus.ARToolkit
         bool[] prior = Array.Empty<bool>();
         bool[] shown = Array.Empty<bool>();
         bool[] kept = Array.Empty<bool>();
+        bool[] blocked = Array.Empty<bool>();
+        bool[] covered = Array.Empty<bool>();
+        bool[] wall = Array.Empty<bool>();
         CellState[] states = Array.Empty<CellState>();
         float priorWeight = SurfaceEvidence.PriorWeight;
 
@@ -46,6 +49,9 @@ namespace Erasmus.ARToolkit
                 prior = new bool[count];
                 shown = new bool[count];
                 kept = new bool[count];
+                blocked = new bool[count];
+                covered = new bool[count];
+                wall = new bool[count];
                 states = new CellState[count];
                 return;
             }
@@ -54,6 +60,9 @@ namespace Erasmus.ARToolkit
             Array.Clear(prior, 0, count);
             Array.Clear(shown, 0, count);
             Array.Clear(kept, 0, count);
+            Array.Clear(blocked, 0, count);
+            Array.Clear(covered, 0, count);
+            Array.Clear(wall, 0, count);
             Array.Clear(states, 0, count);
         }
 
@@ -84,6 +93,21 @@ namespace Erasmus.ARToolkit
         public bool WasKept(int index) => kept[index];
 
         public void SetKept(int index, bool value) => kept[index] = value;
+
+        /// <summary>Something stands on the cell (a floor cell under a chair): it is not drawn and nothing is placed there.</summary>
+        public bool IsBlocked(int index) => blocked[index];
+
+        public void SetBlocked(int index, bool value) => blocked[index] = value;
+
+        /// <summary>A raised surface lies above the cell (a floor cell under a table): the camera cannot see it from above.</summary>
+        public bool IsCovered(int index) => covered[index];
+
+        public void SetCovered(int index, bool value) => covered[index] = value;
+
+        /// <summary>A wall stands on the cell: the floor on its other side belongs to another room.</summary>
+        public bool IsWall(int index) => wall[index];
+
+        public void SetWall(int index, bool value) => wall[index] = value;
 
         public bool IsShown(int index) => shown[index];
 

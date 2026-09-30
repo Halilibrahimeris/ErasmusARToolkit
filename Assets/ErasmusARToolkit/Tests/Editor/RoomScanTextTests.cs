@@ -4,6 +4,36 @@ using NUnit.Framework;
 
 namespace Erasmus.ARToolkit.Tests
 {
+    public class RoomScanObstacleTextTests
+    {
+        [Test]
+        public void Progress_CountsTheObstacles_WhenThereAreAny()
+        {
+            var none = new RoomScanProgress(true, 2, 3.5f, 6f, true);
+            var one = new RoomScanProgress(true, 2, 3.5f, 6f, true, true, 1);
+            var three = new RoomScanProgress(true, 2, 3.5f, 6f, true, true, 3);
+
+            StringAssert.DoesNotContain("obstacle", RoomScanText.Progress(none));
+            StringAssert.Contains("· 1 obstacle", RoomScanText.Progress(one));
+            StringAssert.DoesNotContain("1 obstacles", RoomScanText.Progress(one));
+            StringAssert.Contains("· 3 obstacles", RoomScanText.Progress(three));
+            Assert.AreEqual(3, three.ObstacleCount);
+        }
+
+        [Test]
+        public void Progress_CountsTheWalls_WhenThereAreAny()
+        {
+            var none = new RoomScanProgress(true, 2, 3.5f, 6f, true, true, 3);
+            var one = new RoomScanProgress(true, 2, 3.5f, 6f, true, true, 3, 1);
+            var four = new RoomScanProgress(true, 2, 3.5f, 6f, true, true, 0, 4);
+
+            StringAssert.DoesNotContain("wall", RoomScanText.Progress(none));
+            StringAssert.Contains("· 3 obstacles · 1 wall", RoomScanText.Progress(one));
+            StringAssert.Contains("· 4 walls", RoomScanText.Progress(four));
+            StringAssert.DoesNotContain("obstacle", RoomScanText.Progress(four));
+        }
+    }
+
     public class RoomScanTextTests
     {
         [Test]

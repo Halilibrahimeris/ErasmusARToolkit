@@ -104,6 +104,8 @@ namespace Erasmus.ARToolkit.Tests
         [TestCase("ARToolkitImageTarget", RenderOrder.CameraImage)]
         [TestCase("ARToolkitOccluder", RenderOrder.RoomOccluder)]
         [TestCase("ARToolkitSurfaceDepth", RenderOrder.SurfaceDepth)]
+        [TestCase("ARToolkitObstacle", RenderOrder.ObstacleFill)]
+        [TestCase("ARToolkitObstacleEdge", RenderOrder.ObstacleOutline)]
         public void ToolkitMaterials_UseTheirRenderOrder(string materialName, int expectedQueue)
         {
             var material = Editor.ToolkitAssets.FindAsset<Material>(materialName);

@@ -41,12 +41,37 @@ namespace Erasmus.ARToolkit
             if (raycastManager != null && raycastManager.enabled
                 && raycastManager.Raycast(screenPosition, Hits, TrackableType.PlaneWithinPolygon))
             {
-                pose = SnapToSurface(Hits[0]);
-                return true;
+                // Hits come nearest first. Vertical planes are the walls of the room scan: nothing is
+                // placed on them. (Before a scan they are not drawn either, so they are not in the way.)
+                var index = FirstHorizontal(Hits, IsHorizontal);
+                if (index >= 0)
+                {
+                    pose = SnapToSurface(Hits[index]);
+                    return true;
+                }
             }
 
             pose = default;
             return false;
+        }
+
+        /// <summary>Index of the first hit on a horizontal plane, or -1.</summary>
+        internal static int FirstHorizontal<T>(IReadOnlyList<T> hits, System.Func<T, bool> isHorizontal)
+        {
+            for (var i = 0; i < hits.Count; i++)
+            {
+                if (isHorizontal(hits[i]))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        static bool IsHorizontal(ARRaycastHit hit)
+        {
+            return !(hit.trackable is ARPlane plane) || plane.alignment.IsHorizontal();
         }
 
         Pose SnapToSurface(ARRaycastHit hit)

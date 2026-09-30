@@ -302,5 +302,14 @@ namespace Erasmus.ARToolkit.Tests
         {
             new RoomModelBuilder().Rebuild(map, 10f, true, null);
         }
+
+        /// <summary>
+        /// As <see cref="ShowAll(RoomSurfaceMap)"/>, with the builder of the test: it remembers the boxes
+        /// around obstacles from redraw to redraw, as the room scan does.
+        /// </summary>
+        internal static void ShowAll(RoomSurfaceMap map, RoomModelBuilder builder)
+        {
+            builder.Rebuild(map, 0.5f, true, null);
+        }
     }
 }

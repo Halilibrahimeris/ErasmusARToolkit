@@ -295,6 +295,14 @@ namespace Erasmus.ARToolkit.Tests
                 Placed[levelId] = placement;
             }
 
+            public void ShowObstacles(ObstacleMeshData data)
+            {
+            }
+
+            public void ShowWalls(ObstacleMeshData data, float floorHeight)
+            {
+            }
+
             public void Keep(ICollection<int> levelIds)
             {
             }

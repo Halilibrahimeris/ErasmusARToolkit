@@ -24,8 +24,20 @@ namespace Erasmus.ARToolkit
     [DisallowMultipleComponent]
     public sealed class RoomScanner : MonoBehaviour
     {
-        const float IntegrateInterval = 0.125f;
+        const float IntegrateInterval = ScanPacing.NormalInterval;
         const float RebuildInterval = 0.5f;
+
+        /// <summary>When surfaces wait to be drawn, the next redraw comes this soon (seconds).</summary>
+        const float CatchUpInterval = 0.15f;
+
+        const float ThermalInterval = 10f;
+
+        static readonly Unity.Profiling.ProfilerMarker IntegrateMarker =
+            new Unity.Profiling.ProfilerMarker("Erasmus.RoomScan.Integrate");
+
+        static readonly Unity.Profiling.ProfilerMarker RebuildMarker =
+            new Unity.Profiling.ProfilerMarker("Erasmus.RoomScan.Rebuild");
+
         const float PriorInterval = 0.5f;
         const float MaxTurnDegreesPerSecond = 60f;
 
@@ -77,6 +89,7 @@ namespace Erasmus.ARToolkit
         /// <summary>Where the floor is taken to be until a plane says more: this far (meters) below the phone.</summary>
         const float FloorGuessBelowCamera = 1.2f;
 
+        const string ObstacleShaderName = "Erasmus AR Toolkit/Obstacle";
         const string OccluderShaderName = "Erasmus AR Toolkit/Occluder";
         const string SurfaceDepthShaderName = "Erasmus AR Toolkit/Surface Depth";
 
@@ -87,6 +100,17 @@ namespace Erasmus.ARToolkit
                                  "so grids and objects standing on the floor or a table are not cut into patches.")]
         bool steadySurfaceDepth = true;
 
+        [SerializeField, Tooltip("Looks for what stands on the floor (chairs, bags, cabinets), keeps the floor grid " +
+                                 "away from it and draws a box around it.")]
+        bool detectObstacles = true;
+
+        [SerializeField, Tooltip("Looks for the walls of the room and shows them, so it is clear where the room " +
+                                 "ends. Nothing can be placed behind a wall.")]
+        bool detectWalls = true;
+
+        [SerializeField, Range(0.1f, 1f), Tooltip("Distance between the grid lines on scanned surfaces, in meters.")]
+        float gridCellSize = 0.25f;
+
         readonly RoomSurfaceMap map = new RoomSurfaceMap();
         readonly RoomModelBuilder model = new RoomModelBuilder();
         readonly ScanFrame frame = new ScanFrame();
@@ -96,7 +120,11 @@ namespace Erasmus.ARToolkit
         readonly MapFrame mapFrame = new MapFrame();
         readonly SurfaceBindings bindings = new SurfaceBindings();
         readonly ScanVerifier verifier = new ScanVerifier();
+        readonly ScanPacing pacing = new ScanPacing();
         readonly ScanFrame verifyFrame = new ScanFrame();
+        readonly List<ObstacleVolume> obstacles = new List<ObstacleVolume>();
+        readonly List<WallSegment> walls = new List<WallSegment>();
+        readonly List<Vector3> wallOutline = new List<Vector3>();
 
         ARAnchorManager anchorManager;
         ARPlaneManager planeManager;
@@ -110,6 +138,10 @@ namespace Erasmus.ARToolkit
         Material surfaceDepthMaterial;
         Material ownedOccluderMaterial;
         Material ownedSurfaceDepthMaterial;
+        Material obstacleMaterial;
+        Material obstacleEdgeMaterial;
+        Material ownedObstacleMaterial;
+        Material ownedObstacleEdgeMaterial;
         RoomSurfaceView view;
         IScanFrameSource preciseSource;
         IScanFrameSource sparseSource;
@@ -134,6 +166,10 @@ namespace Erasmus.ARToolkit
         float weakDepthSince = -1f;
         bool weakDepthSaid;
         bool tooFarSaid;
+        bool warmSaid;
+        float nextThermal;
+        int thermalStatus = ThermalStatus.Unknown;
+        Func<int> readThermalStatus = ThermalStatus.Read;
         bool verifying;
         bool listeningToPlanes;
         float verifyUntil;
@@ -149,12 +185,34 @@ namespace Erasmus.ARToolkit
         public event Action<RoomScanProgress> ProgressChanged;
         public event Action<string> Notification;
 
+        /// <summary>The boxes around what stands in the room changed (see <see cref="Obstacles"/>).</summary>
+        public event Action ObstaclesChanged;
+
+        /// <summary>The walls of the room changed (see <see cref="Walls"/>).</summary>
+        public event Action WallsChanged;
+
         public bool IsScanning { get; private set; }
 
         /// <summary>True once the scan has drawn at least one surface. Placement then uses the scan only.</summary>
         public bool HasModel { get; private set; }
 
         public RoomScanProgress Progress { get; private set; }
+
+        /// <summary>
+        /// What stands in the room, as boxes in world space: furniture, bags, walls. Updated with every
+        /// redraw while scanning.
+        /// </summary>
+        public IReadOnlyList<ObstacleVolume> Obstacles => obstacles;
+
+        /// <summary>The walls of the room as far as they were found, in world space.</summary>
+        public IReadOnlyList<WallSegment> Walls => walls;
+
+        /// <summary>Looks for the walls of the room. Set before a scan starts.</summary>
+        public bool DetectWalls
+        {
+            get => detectWalls;
+            set => detectWalls = value;
+        }
 
         /// <summary>What the scan measured last (updated with every redraw while scanning).</summary>
         public ScanDiagnostics Diagnostics => diagnostics;
@@ -163,6 +221,16 @@ namespace Erasmus.ARToolkit
 
         /// <summary>Where the space of the scan lies in the world.</summary>
         internal MapFrame Frame => mapFrame;
+
+        /// <summary>How often the scan takes a frame, and why.</summary>
+        internal ScanPacing Pacing => pacing;
+
+        /// <summary>Tests say how warm the phone is.</summary>
+        internal void SetThermalStatusForTests(Func<int> read)
+        {
+            readThermalStatus = read ?? ThermalStatus.Read;
+            nextThermal = 0f;
+        }
 
         /// <summary>The model is being checked against the room (see <see cref="Reverify"/>).</summary>
         internal bool IsVerifying => verifying;
@@ -177,6 +245,32 @@ namespace Erasmus.ARToolkit
             theme = toolkitTheme;
             occluderMaterial = theme != null ? theme.OccluderMaterial : null;
             surfaceDepthMaterial = theme != null ? theme.SurfaceDepthMaterial : null;
+            obstacleMaterial = theme != null ? theme.ObstacleMaterial : null;
+            obstacleEdgeMaterial = theme != null ? theme.ObstacleEdgeMaterial : null;
+        }
+
+        /// <summary>Distance between the grid lines on scanned surfaces, in meters (0.1 up to 1).</summary>
+        public float GridCellSize
+        {
+            get => gridCellSize;
+            set
+            {
+                gridCellSize = Mathf.Clamp(value, 0.1f, 1f);
+                view?.SetGridCellSize(gridCellSize);
+            }
+        }
+
+        /// <summary>Direction of the walls of the room in world space, in degrees around the vertical axis.</summary>
+        public float RoomYaw => (mapFrame.IsBegun ? mapFrame.Root.eulerAngles.y : 0f) + model.RoomYaw;
+
+        internal RoomModelBuilder Model => model;
+
+        /// <summary>Tests give the boxes around obstacles their materials.</summary>
+        internal void SetObstacleMaterialsForTests(Material fill, Material edge)
+        {
+            obstacleMaterial = fill;
+            obstacleEdgeMaterial = edge;
+            view?.SetObstacleMaterials(fill, edge);
         }
 
         /// <summary>Tests replace the AR inputs with their own.</summary>
@@ -242,6 +336,8 @@ namespace Erasmus.ARToolkit
             mapFrame.Dispose();
             ObjectUtility.SafeDestroy(ownedOccluderMaterial);
             ObjectUtility.SafeDestroy(ownedSurfaceDepthMaterial);
+            ObjectUtility.SafeDestroy(ownedObstacleMaterial);
+            ObjectUtility.SafeDestroy(ownedObstacleEdgeMaterial);
         }
 
         void OnApplicationPause(bool paused)
@@ -278,6 +374,12 @@ namespace Erasmus.ARToolkit
             }
 
             var now = Time.unscaledTime;
+            pacing.NoteFrame(Time.unscaledDeltaTime, integrateMs + (watchedSource != null ? watchedSource.CaptureMs : 0f), now);
+            if (now >= nextThermal && !CheckTemperature(now))
+            {
+                return;
+            }
+
             if (priorsDirty && now >= nextPriors)
             {
                 UpdatePriors();
@@ -317,7 +419,7 @@ namespace Erasmus.ARToolkit
                 return;
             }
 
-            view?.SetGridFrame(mapFrame.Root);
+            view?.SetGridFrame(mapFrame.Root, model.RoomYaw);
             if (moved > LargeJumpMeters || turned > LargeJumpDegrees)
             {
                 // ARCore found out that it was somewhere else (after tracking was lost, mostly).
@@ -326,6 +428,7 @@ namespace Erasmus.ARToolkit
             else if (moved > JumpMeters || turned > JumpDegrees)
             {
                 pausedUntil = Time.unscaledTime + JumpPauseSeconds;
+                map.NoteMapMoved();
             }
         }
 
@@ -345,6 +448,9 @@ namespace Erasmus.ARToolkit
             }
 
             EndVerifying();
+            map.DetectObstacles = detectObstacles;
+            map.DetectWalls = detectWalls;
+            model.Axes.Unfreeze();
             UseSource(source);
             IsScanning = true;
             if (arCamera != null)
@@ -368,6 +474,9 @@ namespace Erasmus.ARToolkit
             weakDepthSince = -1f;
             weakDepthSaid = false;
             tooFarSaid = false;
+            warmSaid = false;
+            nextThermal = 0f;
+            pacing.Reset();
             residuals.Clear();
             ScanningChanged?.Invoke(true);
             if (!source.IsPrecise)
@@ -384,6 +493,10 @@ namespace Erasmus.ARToolkit
             }
 
             StopScanning();
+
+            // The last redraw lays everything along the room as it is known now; from then on it stays.
+            Rebuild(true);
+            model.SettleAxes();
             Rebuild(true);
             Notify(HasModel ? RoomScanText.Finished(Progress) : RoomScanText.NoSurfaces);
         }
@@ -421,12 +534,16 @@ namespace Erasmus.ARToolkit
         /// <summary>The scanned surface under a screen point (pixels). Only meaningful when <see cref="HasModel"/>.</summary>
         public bool TryGetPose(Vector2 screenPosition, out Pose pose)
         {
-            var found = TryGetHit(screenPosition, out var hit);
+            var found = TryGetHit(screenPosition, out var hit) && !hit.Blocked;
             pose = hit.Pose;
             return found;
         }
 
-        /// <summary>Like <see cref="TryGetPose"/>, and tells which surface was hit.</summary>
+        /// <summary>
+        /// The scanned surface under a screen point (pixels), and which surface it is. True also when
+        /// something stands in the way (<see cref="SurfaceHit.Blocked"/>): nothing can be placed there,
+        /// and the user can be told why.
+        /// </summary>
         public bool TryGetHit(Vector2 screenPosition, out SurfaceHit hit)
         {
             hit = default;
@@ -437,12 +554,14 @@ namespace Erasmus.ARToolkit
         internal bool TryGetHit(Ray worldRay, out SurfaceHit hit)
         {
             hit = default;
-            if (!map.Raycast(mapFrame.ToMap(worldRay), RaycastDistance, out var pose, out var levelId))
+            var found = map.Raycast(mapFrame.ToMap(worldRay), RaycastDistance, out var pose, out var levelId,
+                out var blocked, out var behindWall);
+            if (!found && !blocked)
             {
                 return false;
             }
 
-            hit = new SurfaceHit(mapFrame.ToWorld(pose), levelId);
+            hit = new SurfaceHit(mapFrame.ToWorld(pose), found ? levelId : -1, blocked, behindWall);
             return true;
         }
 
@@ -684,6 +803,33 @@ namespace Erasmus.ARToolkit
             }
         }
 
+        /// <summary>
+        /// A scan works the phone hard: camera, depth and the scan itself. A phone that gets warm scans
+        /// more slowly; one that gets hot ends the scan, before Android slows everything down. False when
+        /// the scan was ended.
+        /// </summary>
+        bool CheckTemperature(float now)
+        {
+            nextThermal = now + ThermalInterval;
+            thermalStatus = readThermalStatus();
+            pacing.NoteThermalStatus(thermalStatus);
+            if (pacing.IsHot)
+            {
+                Log("Scan: the phone is hot (thermal status " + thermalStatus + "); the scan ends.");
+                FinishScan();
+                Notify(RoomScanText.PhoneHot);
+                return false;
+            }
+
+            if (pacing.IsWarm && !warmSaid)
+            {
+                warmSaid = true;
+                Notify(RoomScanText.PhoneWarm);
+            }
+
+            return true;
+        }
+
         void StopScanning()
         {
             if (!IsScanning)
@@ -766,7 +912,7 @@ namespace Erasmus.ARToolkit
         void Integrate()
         {
             var now = Time.unscaledTime;
-            nextIntegrate = now + IntegrateInterval;
+            nextIntegrate = now + pacing.Interval;
             if (source == null || verifying || now < pausedUntil || !isTracking() || !mapFrame.IsTracking
                 || turnSpeed > MaxTurnDegreesPerSecond || moveSpeed > MaxMetersPerSecond)
             {
@@ -792,7 +938,11 @@ namespace Erasmus.ARToolkit
             }
 
             var started = Stopwatch.GetTimestamp();
-            map.Integrate(frame);
+            using (IntegrateMarker.Auto())
+            {
+                map.Integrate(frame);
+            }
+
             integrateMs = Smooth(integrateMs, started);
             UpdatePlaneSuppression();
         }
@@ -861,6 +1011,10 @@ namespace Erasmus.ARToolkit
             if (planeManager != null)
             {
                 ArcorePlanePriors.Apply(planeManager, map, polygon, mapFrame.WorldToMap);
+                if (detectWalls)
+                {
+                    ArcoreWallPriors.Apply(planeManager, map.Walls, wallOutline, mapFrame.WorldToMap);
+                }
             }
         }
 
@@ -873,15 +1027,66 @@ namespace Erasmus.ARToolkit
             lastRebuild = now;
             nextRebuild = now + RebuildInterval;
 
-            model.Rebuild(map, seconds, all, GetView());
+            map.Obstacles.DecayWeak();
+            using (RebuildMarker.Auto())
+            {
+                model.Rebuild(map, seconds, all, GetView());
+            }
+
+            if (model.Waiting(map) > 0)
+            {
+                // Not everything that changed was drawn: the rest follows soon.
+                nextRebuild = now + CatchUpInterval;
+            }
+
+            view.SetGridFrame(mapFrame.Root, model.RoomYaw);
             bindings.FollowHeights(map);
+            UpdateObstacles();
             HasModel = model.SurfaceArea > 0f;
             UpdatePlaneSuppression();
             rebuildMs = Smooth(rebuildMs, started);
             RefreshDiagnostics();
             Progress = new RoomScanProgress(IsScanning, model.SurfaceCount, model.SurfaceArea, map.CheckedArea,
-                source == null || source.IsPrecise, map.FloorState != FloorState.Unknown);
+                source == null || source.IsPrecise, map.FloorState != FloorState.Unknown, obstacles.Count, walls.Count);
             ProgressChanged?.Invoke(Progress);
+            if (IsScanning && HasModel && pacing.LooksComplete(map.CheckedArea, now))
+            {
+                Notify(RoomScanText.LooksComplete);
+            }
+        }
+
+        /// <summary>The boxes and the walls of the scan, in world space.</summary>
+        void UpdateObstacles()
+        {
+            var volumes = map.Volumes;
+            var changed = model.ObstaclesChanged || volumes.Count != obstacles.Count;
+            obstacles.Clear();
+            for (var i = 0; i < volumes.Count; i++)
+            {
+                obstacles.Add(volumes[i].At(mapFrame.ToWorld(volumes[i].Pose)));
+            }
+
+            var segments = map.Walls.Segments;
+            var wallsChanged = model.WallsChanged || segments.Count != walls.Count;
+            walls.Clear();
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var wall = segments[i];
+                var a = mapFrame.ToWorld(new Vector3(wall.A.x, wall.Bottom, wall.A.y));
+                var b = mapFrame.ToWorld(new Vector3(wall.B.x, wall.Top, wall.B.y));
+                walls.Add(new WallSegment(new Vector2(a.x, a.z), new Vector2(b.x, b.z), a.y, b.y, wall.Confidence,
+                    wall.FromPlane));
+            }
+
+            if (changed)
+            {
+                ObstaclesChanged?.Invoke();
+            }
+
+            if (wallsChanged)
+            {
+                WallsChanged?.Invoke();
+            }
         }
 
         void TrackCameraSpeed()
@@ -1001,8 +1206,14 @@ namespace Erasmus.ARToolkit
                 view = new RoomSurfaceView(mapFrame.Root, fillMaterial, outlineMaterial,
                     useOccluders ? GetOccluderMaterial() : null,
                     steadySurfaceDepth ? GetSurfaceDepthMaterial() : null);
+                if (detectObstacles || detectWalls)
+                {
+                    UseObstacleMaterials();
+                }
+
+                view.SetGridCellSize(gridCellSize);
                 view.SetVisible(visible);
-                view.SetGridFrame(mapFrame.Root);
+                view.SetGridFrame(mapFrame.Root, model.RoomYaw);
             }
 
             return view;
@@ -1022,6 +1233,40 @@ namespace Erasmus.ARToolkit
             }
 
             return occluderMaterial;
+        }
+
+        /// <summary>
+        /// The materials of the boxes around obstacles: the theme's, or made from the theme's shader in
+        /// the accent color.
+        /// </summary>
+        void UseObstacleMaterials()
+        {
+            if (obstacleMaterial == null)
+            {
+                obstacleMaterial = ownedObstacleMaterial = CreateObstacleMaterial(RenderOrder.ObstacleFill, 0.18f, 2f);
+            }
+
+            if (obstacleEdgeMaterial == null)
+            {
+                obstacleEdgeMaterial = ownedObstacleEdgeMaterial =
+                    CreateObstacleMaterial(RenderOrder.ObstacleOutline, 0.9f, 0f);
+            }
+
+            view.SetObstacleMaterials(obstacleMaterial, obstacleEdgeMaterial);
+        }
+
+        Material CreateObstacleMaterial(int renderQueue, float alpha, float cull)
+        {
+            var material = CreateFallbackMaterial(theme != null ? theme.ObstacleShader : null, ObstacleShaderName,
+                renderQueue);
+            if (material != null)
+            {
+                var color = theme != null ? theme.AccentColor : new Color(1f, 0.8f, 0f, 1f);
+                material.SetColor("_BaseColor", new Color(color.r, color.g, color.b, alpha));
+                material.SetFloat("_Cull", cull);
+            }
+
+            return material;
         }
 
         Material GetSurfaceDepthMaterial()
@@ -1164,7 +1409,7 @@ namespace Erasmus.ARToolkit
             diagnostics.Reflections = map.Reflections;
             diagnostics.Implausible = map.Implausible;
             diagnostics.FramesIntegrated = map.FramesIntegrated;
-            diagnostics.ThermalStatus = -1;
+            diagnostics.ThermalStatus = thermalStatus;
 
             var background = cameraManager != null
                 ? cameraManager.currentRenderingMode

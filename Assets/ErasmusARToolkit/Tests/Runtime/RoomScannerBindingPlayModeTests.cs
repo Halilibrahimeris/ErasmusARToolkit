@@ -340,6 +340,147 @@ namespace Erasmus.ARToolkit.Tests
             UnityEngine.Object.DestroyImmediate(depthMaterial);
         }
 
+        [UnityTest]
+        public IEnumerator HidePlanes_KeepsDepthPartsAndHidesObstacles()
+        {
+            var depthMaterial = new Material(Shader.Find("Erasmus AR Toolkit/Surface Depth"));
+            var boxMaterial = new Material(Shader.Find("Erasmus AR Toolkit/Obstacle"));
+            scanner.ConfigureForTests(cameraObject.GetComponent<Camera>(), source, () => true, material, material, null,
+                depthMaterial);
+            scanner.SetObstacleMaterialsForTests(boxMaterial, boxMaterial);
+            room.AddBox(new Vector3(-0.2f, 0f, 0.6f), new Vector3(0.2f, 0.5f, 0.9f));
+            var changes = 0;
+            scanner.ObstaclesChanged += () => changes++;
+            scanner.StartScan();
+
+            var start = cameraObject.transform.position;
+            var giveUpAt = Time.realtimeSinceStartup + 12f;
+            while (scanner.Obstacles.Count == 0 && Time.realtimeSinceStartup < giveUpAt)
+            {
+                cameraObject.transform.position = start + Vector3.right * (0.4f * Mathf.Sin(Time.time * 1.2f));
+                cameraObject.transform.LookAt(new Vector3(0f, 0f, 0.8f));
+                yield return null;
+            }
+
+            Assert.AreEqual(1, scanner.Obstacles.Count, "The box on the floor should be found.");
+            Assert.Greater(changes, 0);
+            Assert.AreEqual(1, scanner.Progress.ObstacleCount);
+            var found = scanner.Obstacles[0];
+            Assert.IsTrue(found.ContainsXZ(new Vector3(0f, 0f, 0.75f)));
+            Assert.AreEqual(0.5f, found.Size.y, 0.05f);
+
+            scanner.SetVisible(false);
+
+            var root = GameObject.Find(MapFrame.RootName);
+            var boxes = 0;
+            var depthParts = 0;
+            foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+            {
+                if (renderer.name.StartsWith("Obstacle"))
+                {
+                    boxes++;
+                    Assert.IsTrue(renderer.enabled, renderer.name + " has a box to draw.");
+                    Assert.IsTrue(renderer.forceRenderingOff, renderer.name + " should be hidden.");
+                }
+                else if (renderer.name.StartsWith("Depth"))
+                {
+                    depthParts++;
+                    Assert.IsFalse(renderer.forceRenderingOff, renderer.name + " is about the real world.");
+                }
+            }
+
+            Assert.AreEqual(2, boxes, "A fill and an outline.");
+            Assert.GreaterOrEqual(depthParts, 3);
+
+            scanner.SetVisible(true);
+            foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+            {
+                Assert.IsFalse(renderer.forceRenderingOff, renderer.name);
+            }
+
+            UnityEngine.Object.DestroyImmediate(depthMaterial);
+            UnityEngine.Object.DestroyImmediate(boxMaterial);
+        }
+
+        [UnityTest]
+        public IEnumerator Grid_FollowsTheScanAndTheRoom()
+        {
+            scanner.GridCellSize = 0.5f;
+            scanner.StartScan();
+            yield return WaitUntil(() => scanner.HasModel);
+            var root = GameObject.Find(MapFrame.RootName);
+            Material fill = null;
+            foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+            {
+                if (renderer.name == "Fill")
+                {
+                    fill = renderer.sharedMaterial;
+                }
+            }
+
+            Assert.IsNotNull(fill);
+            Assert.AreEqual(new Vector2(2f, 2f), fill.GetTextureScale("_BaseMap"), "Two lines per meter.");
+            Assert.AreNotSame(material, fill, "The material of the planes is left alone.");
+            Assert.AreEqual(Vector2.one, material.GetTextureScale("_BaseMap"));
+
+            anchor.transform.position = new Vector3(0.012f, 0f, -0.008f);
+            anchor.transform.rotation = Quaternion.Euler(0f, 0.3f, 0f);
+            yield return null;
+            yield return null;
+
+            var frame = fill.GetVector("_GridFrame");
+            var yaw = scanner.RoomYaw * Mathf.Deg2Rad;
+            Assert.AreEqual(0.012f, frame.x, 1e-4f);
+            Assert.AreEqual(-0.008f, frame.y, 1e-4f);
+            Assert.AreEqual(Mathf.Cos(yaw), frame.z, 1e-4f);
+            Assert.AreEqual(Mathf.Sin(yaw), frame.w, 1e-4f);
+            Assert.AreEqual(0.3f + scanner.Model.RoomYaw, scanner.RoomYaw, 1e-3f);
+        }
+
+        [UnityTest]
+        public IEnumerator HidePlanes_HidesWalls()
+        {
+            var boxMaterial = new Material(Shader.Find("Erasmus AR Toolkit/Obstacle"));
+            scanner.SetObstacleMaterialsForTests(boxMaterial, boxMaterial);
+            var changes = 0;
+            scanner.WallsChanged += () => changes++;
+            scanner.StartScan();
+            yield return WaitUntil(() => scanner.HasModel && scanner.Map.FloorState != FloorState.Unknown);
+
+            // ARCore detects the wall at the end of the room.
+            scanner.Map.Walls.AddPlane(new List<Vector3>
+            {
+                new Vector3(-2f, 0.3f, 2.5f), new Vector3(2f, 0.3f, 2.5f),
+                new Vector3(2f, 2.3f, 2.5f), new Vector3(-2f, 2.3f, 2.5f),
+            }, Vector3.back);
+            yield return WaitUntil(() => scanner.Walls.Count > 0);
+
+            Assert.AreEqual(1, scanner.Walls.Count);
+            Assert.Greater(changes, 0);
+            Assert.AreEqual(1, scanner.Progress.WallCount);
+            Assert.AreEqual(4f, scanner.Walls[0].Length, 0.01f);
+            StringAssert.Contains("1 wall", RoomScanText.Progress(scanner.Progress));
+
+            scanner.SetVisible(false);
+
+            var root = GameObject.Find(MapFrame.RootName);
+            var walls = 0;
+            foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+            {
+                if (renderer.name.StartsWith("Wall"))
+                {
+                    walls++;
+                    Assert.IsTrue(renderer.enabled, renderer.name + " has a wall to draw.");
+                    Assert.IsTrue(renderer.forceRenderingOff, renderer.name + " should be hidden.");
+                    Assert.AreNotSame(boxMaterial, renderer.sharedMaterial, "Walls fade toward the top.");
+                    Assert.AreEqual(WallModel.MaxDrawnHeight, renderer.sharedMaterial.GetFloat("_FadeHeight"));
+                }
+            }
+
+            Assert.AreEqual(2, walls, "A panel and its edges.");
+            UnityEngine.Object.DestroyImmediate(boxMaterial);
+        }
+
         static bool HasDepthCorrection(int levelId)
         {
             var surface = GameObject.Find("Surface " + levelId);

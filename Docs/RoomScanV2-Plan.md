@@ -549,3 +549,19 @@ Ayrıntılı İngilizce şartname ve kanıtlar (uygulamanın ilk adımında `Doc
 **Kritik dosyalar:** `R/Runtime/Scanning/RoomSurfaceMap.cs`, `RoomScanner.cs`, `DepthScanSource.cs`,
 `RoomSurfaceView.cs`, `SurfaceLevel.cs`, `SurfaceMeshBuilder.cs`; `R/Shaders/ARToolkitSurface*.shader`;
 `R/Runtime/Core/ARToolkitManager.cs`; `R/Editor/Services/ToolkitAssets.cs`, `BuildRunner.cs`.
+
+## Uygulama durumu (2026-09-30)
+
+P0–P8 uygulandı. Editor testleri: **522 Edit Mode, 47 Play Mode, tümü geçiyor.** Telefonda henüz ölçüm
+yapılmadı; "Cihazda ölçüm protokolü" ve "Cihaz denetim listesi" açık duruyor.
+
+Plandan sapmalar ve gerekçeleri `Docs/RoomScanV2-Implementation.md` dosyasında (İngilizce). Özet:
+
+| Aşama | Sapma |
+|---|---|
+| P2 | Tarama başlangıcından en çok 10 m (plan: 8 m) |
+| P4 | Engeller her zaman kutu; L/U biçimli kümeler prizma yerine en fazla 4 kutuya bölünür. Masaların altındaki zemin çizilmez |
+| P5 | Kenar çizgisi histerezisi (5 cm / 15 cm / 3 yeniden çizim); oda yönü dairesel ortalamayla |
+| P6 | Duvar arkasındaki teyitsiz zemin 3 m'ye kadar çizilmez (plan: < 1 m² kopuk parçalar); derinlikten gelen duvarlar 6 yeniden çizim boyunca korunur |
+| P7 | **Burst job'ları ertelendi** (cihaz ölçümü bekliyor); yerine nokta bütçesi (6400), yeniden çizim bütçesi (3), uyarlamalı hız ve ısı yönetimi |
+| P8 | Performans test derlemesi ve `AnchorRemoved_IsRecreated` yazılmadı; anchor sıçramasında zemin ~2,5 sn'de toparlanıyor (`NoteMapMoved`) |
